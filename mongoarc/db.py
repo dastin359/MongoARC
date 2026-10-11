@@ -23,6 +23,11 @@ EVENTS = "events"
 RULEBOOKS = "rulebooks"
 LESSONS = "lessons"
 GENERATIONS = "generations"
+NOTES = "notes"
+
+# The memory banks a viewer can open: what the harness remembers, as opposed to
+# the raw record of play (actions, events).
+MEMORY_BANKS = [LESSONS, NOTES, RULEBOOKS, GENERATIONS]
 
 # ARC-AGI-3 palette, index 0..15. Index 5 is the background.
 PALETTE = ["#FFFFFF", "#CCCCCC", "#999999", "#666666", "#333333", "#000000", "#E53AA3", "#FF7BCC",
@@ -81,6 +86,9 @@ def ensure_indexes(db: Database) -> None:
     db[LESSONS].create_index([("text", TEXT), ("tags", TEXT)])
     db[LESSONS].create_index([("status", ASCENDING)])
     db[GENERATIONS].create_index([("status", ASCENDING)])
+    db[NOTES].create_index([("text", TEXT), ("path", TEXT)])
+    db[RULEBOOKS].create_index([("verified.rule", TEXT), ("refuted.rule", TEXT), ("open_questions", TEXT)])
+    db[NOTES].create_index([("run_id", ASCENDING)])
 
 
 def now() -> _dt.datetime:

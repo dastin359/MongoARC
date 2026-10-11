@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mongoARC memory</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<script>
+  // Dev switch: /memory?hostcss=1 also loads the live view's own stylesheet, to check nothing collides.
+  if (new URLSearchParams(location.search).get("hostcss")) document.write('<link rel="stylesheet" href="/static/style.css">');
+</script>
+<link rel="stylesheet" href="/static/memory.css">
+<style>
+  /* The same frame the live view gives a tab: a 44px bar, then one bounded row. */
+  html, body { height: 100%; margin: 0; }
+  body { background: #07090d; color: #f1f4f8; overflow: hidden; display: grid; grid-template-rows: 44px minmax(0, 1fr); }
+  .mem-pagebar { display: flex; align-items: center; gap: 14px; padding: 0 12px; background: #0e1218; border-bottom: 1px solid #242d3a; white-space: nowrap; overflow: hidden; }
+  .mem-pagebar .mem-brand { font: 700 18px "JetBrains Mono", ui-monospace, Menlo, monospace; letter-spacing: -.02em; }
+  .mem-pagebar .mem-brand b { color: #FFDC00; }
+  .mem-pagebar .mem-pagetab { align-self: stretch; display: flex; align-items: center; padding: 0 16px; font: 700 13px "JetBrains Mono", ui-monospace, Menlo, monospace; letter-spacing: .08em; border-bottom: 3px solid #FFDC00; }
+  .mem-pagebar .mem-pagesub { font: 500 12px "Instrument Sans", system-ui, sans-serif; color: #7c8797; }
+  #memory-root { min-height: 0; min-width: 0; }
+</style>
+</head>
+<body>
+<header class="mem-pagebar">
+  <div class="mem-brand">mongo<b>ARC</b></div>
+  <div class="mem-pagetab">MEMORY</div>
+  <div class="mem-pagesub">what the harness remembers, read live from MongoDB</div>
+</header>
+<main id="memory-root"></main>
+<script src="/static/memory.js"></script>
+<script>
+  MemoryTab.mount(document.getElementById("memory-root"));
+  MemoryTab.setActive(true);
+</script>
+</body>
+</html>

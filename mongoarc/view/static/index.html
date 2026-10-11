@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mongoARC</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<!-- Loaded without blocking the first paint: on a slow or absent network the page shows at once in the fallback fonts. -->
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<link rel="icon" href="/favicon.ico" type="image/svg+xml">
+<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/controller.css">
+<link rel="stylesheet" href="/static/memory.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">mongo<b>ARC</b><span>self-improving harness for ARC-AGI-3</span></div>
+  <nav class="tabs" id="tabs">
+    <button data-tab="live">LIVE PLAY</button>
+    <button data-tab="evolution">EVOLUTION</button>
+    <button data-tab="memory">MEMORY</button>
+  </nav>
+  <div class="grow"></div>
+  <label class="picker" id="pickerWrap">RUN <select id="runSel" aria-label="Run"></select></label>
+  <div class="seg" id="modeSeg">
+    <button data-mode="live">LIVE</button>
+    <button data-mode="replay">REPLAY</button>
+  </div>
+  <div class="conn" id="conn" title="MongoDB connection"><i></i><span>MONGODB</span></div>
+</header>
+
+<main id="tab-live" class="live">
+  <section class="stage">
+    <div class="stagehead">
+      <span class="game" id="gameId">no run</span>
+      <span class="chip" id="statusChip"></span>
+      <span class="chip gen" id="genChip"></span>
+      <span class="grow"></span>
+      <div class="tapeslot" id="ctlTape" title="The agent's most recent actions, newest on the right"></div>
+      <span class="lastact" id="lastAct" hidden></span>
+    </div>
+    <div class="boardwrap" id="boardWrap">
+      <canvas id="board" width="64" height="64"></canvas>
+      <div class="marker" id="marker" hidden></div>
+      <div class="flash" id="flash"></div>
+      <div class="empty" id="boardEmpty">Waiting for a run.</div>
+    </div>
+    <div class="padslot" id="ctlPad"></div>
+    <div class="transport" id="transport">
+      <div class="livebar" id="liveBar"><i></i><b>LIVE</b><span id="liveInfo">following the newest action</span></div>
+      <div class="replaybar" id="replayBar" hidden>
+        <button id="btnFirst" title="First action">|&lt;</button>
+        <button id="btnBack" title="Step back">&lt;</button>
+        <button id="btnPlay" class="play" title="Play or pause (space)">PLAY</button>
+        <button id="btnFwd" title="Step forward">&gt;</button>
+        <input type="range" id="scrub" min="0" max="0" value="0" aria-label="Action">
+        <span class="pos" id="posLabel">0 / 0</span>
+        <div class="seg small" id="speedSeg">
+          <button data-speed="1">1x</button><button data-speed="2">2x</button><button data-speed="4">4x</button><button data-speed="8">8x</button><button data-speed="16">16x</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="side">
+    <div class="panel hud">
+      <div class="big">
+        <div><div class="num" id="hudLevel">-</div><div class="lbl">LEVELS CLEARED</div></div>
+        <div><div class="num" id="hudActions">-</div><div class="lbl">ACTIONS USED</div></div>
+        <div><div class="num sm" id="hudDeaths">-</div><div class="lbl">DEATHS</div></div>
+      </div>
+      <div class="lvchips" id="levelChips"></div>
+    </div>
+    <div class="panel levels">
+      <h2>ACTIONS PER LEVEL <em>vs human baseline</em></h2>
+      <div id="levelBars"></div>
+    </div>
+    <div class="panel rules">
+      <h2>RULE BOOK <em id="rbVersion"></em></h2>
+      <div class="scroll" id="rulebook"></div>
+    </div>
+    <div class="panel harness">
+      <h2>HARNESS <em>what this run was launched with</em></h2>
+      <div class="scroll" id="harness"></div>
+    </div>
+  </section>
+
+  <section class="panel feedcol">
+    <h2>AGENT FEED <em id="feedInfo"></em></h2>
+    <div class="scroll" id="feed"><div id="feedIn"></div></div>
+  </section>
+</main>
+
+<main id="tab-evolution" class="evo" hidden>
+  <section class="panel gens">
+    <h2>HARNESS GENERATIONS <em>newest first</em></h2>
+    <div class="scroll" id="genList"></div>
+  </section>
+  <section class="evoright">
+    <div class="tiles" id="tiles"></div>
+    <div class="panel chartp">
+      <h2>RUN EFFICIENCY BY GENERATION <em>baseline actions / actions spent, per run, in launch order</em></h2>
+      <div class="legend" id="chartLegend"></div>
+      <div class="chart" id="chart"></div>
+    </div>
+    <div class="panel lessonsp">
+      <h2>LESSONS <em id="lessonInfo"></em></h2>
+      <div class="scroll" id="lessons"></div>
+    </div>
+  </section>
+</main>
+
+<main id="tab-memory" class="memtab" hidden></main>
+
+<div class="tip" id="tip" hidden></div>
+<script src="/static/controller.js"></script>
+<script src="/static/memory.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

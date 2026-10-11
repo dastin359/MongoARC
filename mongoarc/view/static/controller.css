@@ -1,0 +1,264 @@
+/* mongoARC on-screen controller: pad, board click overlay, action tape.
+   Every class is prefixed ctl-; every variable is defined under .ctl-root.
+   Yellow (ARC 11) means "a button was pressed"; magenta (ARC 6) means "a click on the board". */
+
+.ctl-root {
+  --ctl-panel: #0e1218;
+  --ctl-border: #242d3a;
+  --ctl-key: #171e29;
+  --ctl-line: #334052;
+  --ctl-ink: #f1f4f8;
+  --ctl-ink2: #b3bdca;
+  --ctl-ink3: #7c8797;
+  --ctl-hit: #FFDC00;
+  --ctl-hit-ink: #000000;
+  --ctl-hit-glow: rgba(255, 220, 0, .7);
+  --ctl-click: #E53AA3;
+  --ctl-click-glow: rgba(229, 58, 163, .7);
+  --ctl-reset: #F93C31;
+  --ctl-outline: rgba(0, 0, 0, .92);
+  --ctl-flash-ms: 400ms;     /* set by setSpeed() */
+  --ctl-ripple-ms: 1200ms;   /* set by setSpeed() */
+  --ctl-freeze: .25;         /* set by freeze(): where a paused animation stands, 0..1 */
+  --ctl-pop: 1.13;           /* how far a pressed button jumps */
+  --ctl-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  box-sizing: border-box;
+}
+.ctl-root *, .ctl-root *::before, .ctl-root *::after { box-sizing: border-box; }
+
+/* ------------------------------------------------------------------ pad */
+.ctl-pad {
+  container-type: inline-size;
+  width: 100%;
+  font-family: var(--ctl-mono);
+  color: var(--ctl-ink);
+  background: var(--ctl-panel);
+  border: 1px solid var(--ctl-border);
+  border-radius: 6px;
+  -webkit-user-select: none; user-select: none;
+}
+.ctl-pad.ctl-bare { background: none; border: 0; border-radius: 0; }
+.ctl-pad-in {
+  --ctl-u: 46px;
+  --ctl-gap: 4px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas: "dpad side" "click click";
+  gap: 12px 14px;
+  padding: 12px;
+  align-items: center;
+}
+@supports (width: 1cqi) {
+  .ctl-pad-in { --ctl-u: clamp(36px, 15cqi, 54px); }
+}
+.ctl-dpad {
+  grid-area: dpad;
+  display: grid;
+  grid-template-columns: repeat(3, var(--ctl-u));
+  grid-template-rows: repeat(3, var(--ctl-u));
+  grid-template-areas: ". up ." "left hub right" ". down .";
+  gap: var(--ctl-gap);
+}
+.ctl-b-up { grid-area: up; }
+.ctl-b-down { grid-area: down; }
+.ctl-b-left { grid-area: left; }
+.ctl-b-right { grid-area: right; }
+.ctl-hub { grid-area: hub; border-radius: 6px; background: #0a0d12; border: 1.5px solid var(--ctl-border); position: relative; }
+.ctl-hub::after { content: ""; position: absolute; left: 50%; top: 50%; width: 8px; height: 8px; margin: -4px; border-radius: 50%; background: var(--ctl-line); }
+.ctl-side {
+  grid-area: side;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: var(--ctl-u) var(--ctl-u);
+  grid-template-areas: "a5 a5" "a7 reset";
+  gap: var(--ctl-gap);
+  align-content: center;
+}
+.ctl-b-a5 { grid-area: a5; --ctl-pop: 1.06; }
+.ctl-b-a7 { grid-area: a7; }
+.ctl-b-reset { grid-area: reset; }
+
+.ctl-btn {
+  position: relative;
+  display: flex; align-items: center; justify-content: center;
+  min-width: 0;
+  background: var(--ctl-key);
+  border: 1.5px solid var(--ctl-line);
+  border-radius: 6px;
+  color: var(--ctl-ink);
+  box-shadow: inset 0 -3px 0 rgba(0, 0, 0, .4);
+}
+.ctl-btn svg { flex: none; width: calc(var(--ctl-u) * .5); height: calc(var(--ctl-u) * .5); fill: currentColor; display: block; }
+.ctl-tag { position: absolute; left: 4px; top: 3px; font: 700 10px/1 var(--ctl-mono); letter-spacing: .02em; color: var(--ctl-ink3); }
+.ctl-n { position: absolute; right: 4px; bottom: 4px; font: 700 10px/1 var(--ctl-mono); color: var(--ctl-ink2); font-variant-numeric: tabular-nums; }
+.ctl-n:empty { display: none; }
+.ctl-word { font: 700 12px/1 var(--ctl-mono); letter-spacing: .06em; }
+.ctl-b-reset { color: var(--ctl-ink2); }
+.ctl-b-reset .ctl-word { margin-top: -6px; }
+
+/* dimmed: the current game does not offer this action */
+.ctl-btn.ctl-off { opacity: .32; border-style: dashed; box-shadow: none; }
+.ctl-btn.ctl-off.ctl-last { opacity: .7; }
+
+/* the persistent "last pressed" outline, and the flash that decays into it */
+.ctl-btn.ctl-last {
+  border-color: var(--ctl-hit);
+  color: var(--ctl-hit);
+  background: #1d1f1a;
+  box-shadow: 0 0 0 1.5px var(--ctl-hit), inset 0 -3px 0 rgba(0, 0, 0, .4);
+}
+.ctl-btn.ctl-last .ctl-tag, .ctl-btn.ctl-last .ctl-n { color: inherit; }
+.ctl-btn.ctl-hit { z-index: 2; animation: ctl-flash var(--ctl-flash-ms) cubic-bezier(.35, 0, .4, 1), ctl-flash-ink var(--ctl-flash-ms) linear; }
+@keyframes ctl-flash {
+  0%, 32% {
+    background: var(--ctl-hit); border-color: #fff; opacity: 1;
+    box-shadow: 0 0 0 3px var(--ctl-hit), 0 0 30px 10px var(--ctl-hit-glow);
+    transform: scale(var(--ctl-pop));
+  }
+}
+/* the glyph flips from dark to lit in one step, so it never crossfades through the fill colour */
+@keyframes ctl-flash-ink {
+  0% { color: var(--ctl-hit-ink); }
+  62% { color: var(--ctl-hit-ink); animation-timing-function: step-start; }
+}
+
+/* ACTION6: the click indicator. It flashes magenta, like the mark on the board. */
+.ctl-clickind {
+  grid-area: click;
+  --ctl-hit: var(--ctl-click); --ctl-hit-ink: #ffffff; --ctl-hit-glow: var(--ctl-click-glow);
+  --ctl-pop: 1.025;
+  justify-content: flex-start; gap: 9px;
+  padding: 6px 9px; min-height: 46px;
+}
+.ctl-clickind.ctl-last { color: var(--ctl-ink); background: #21151d; }
+.ctl-clickind .ctl-tag, .ctl-clickind .ctl-n { position: static; flex: none; }
+.ctl-clickind .ctl-n { margin-left: auto; }
+.ctl-clickind.ctl-last .ctl-tag { color: var(--ctl-click); }
+.ctl-clickind.ctl-hit .ctl-tag { color: inherit; }
+.ctl-clicktxt { font: 700 15px/1.1 var(--ctl-mono); white-space: nowrap; color: var(--ctl-ink3); flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+@supports (width: 1cqi) { .ctl-clicktxt { font-size: clamp(13px, 4.9cqi, 16px); } }
+.ctl-clickind.ctl-has .ctl-clicktxt { color: inherit; }
+.ctl-mini { position: relative; flex: none; width: 32px; height: 32px; background: #000; border: 1.5px solid var(--ctl-ink3); border-radius: 2px; overflow: hidden; }
+.ctl-mini i { position: absolute; background: var(--ctl-click); opacity: .35; }
+.ctl-mini-h { left: 0; right: 0; height: 1.5px; top: calc(var(--ctl-my, 50) * 1% - .75px); }
+.ctl-mini-v { top: 0; bottom: 0; width: 1.5px; left: calc(var(--ctl-mx, 50) * 1% - .75px); }
+.ctl-mini .ctl-mini-dot { display: none; width: 8px; height: 8px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 1.5px var(--ctl-click);
+  left: calc(var(--ctl-mx, 50) * 1% - 4px); top: calc(var(--ctl-my, 50) * 1% - 4px); }
+.ctl-clickind.ctl-has .ctl-mini i { opacity: 1; }
+.ctl-clickind.ctl-has .ctl-mini-dot { display: block; }
+
+/* horizontal variant: a strip under the board. Arrow keys as an inverted T. */
+.ctl-pad.ctl-row .ctl-pad-in {
+  --ctl-u: 32px;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  grid-template-areas: "dpad side click";
+  gap: 14px; padding: 8px 10px; align-items: stretch;
+}
+@supports (width: 1cqi) {
+  .ctl-pad.ctl-row .ctl-pad-in { --ctl-u: clamp(28px, 4.6cqi, 40px); }
+}
+.ctl-pad.ctl-row .ctl-dpad { grid-template-rows: repeat(2, var(--ctl-u)); grid-template-areas: ". up ." "left down right"; grid-template-columns: repeat(3, calc(var(--ctl-u) * 1.5)); }
+.ctl-pad.ctl-row .ctl-hub { display: none; }
+.ctl-pad.ctl-row .ctl-side { grid-template-columns: repeat(2, calc(var(--ctl-u) * 2)); }
+.ctl-pad.ctl-row .ctl-btn svg { width: calc(var(--ctl-u) * .56); height: calc(var(--ctl-u) * .56); }
+.ctl-pad.ctl-row .ctl-tag { font-size: 9px; left: 3px; top: 2px; }
+.ctl-pad.ctl-row .ctl-n { font-size: 9px; right: 3px; bottom: 3px; }
+.ctl-pad.ctl-row .ctl-word { font-size: 11px; margin-top: -5px; }
+.ctl-pad.ctl-row .ctl-clickind { gap: 12px; padding: 6px 12px; min-height: 0; }
+.ctl-pad.ctl-row .ctl-clickind .ctl-tag, .ctl-pad.ctl-row .ctl-clickind .ctl-n { font-size: 11px; }
+.ctl-pad.ctl-row .ctl-clicktxt { font-size: 20px; }
+@supports (width: 1cqi) { .ctl-pad.ctl-row .ctl-clicktxt { font-size: clamp(15px, 2.9cqi, 24px); } }
+.ctl-pad.ctl-row .ctl-mini { width: calc(var(--ctl-u) * 1.6); height: calc(var(--ctl-u) * 1.6); }
+/* a narrow strip (a 720p projector leaves the board about 500 px): drop the thumbnail, keep the text whole */
+@container (max-width: 620px) {
+  .ctl-pad.ctl-row .ctl-pad-in { gap: 10px; }
+  .ctl-pad.ctl-row .ctl-mini { display: none; }
+  .ctl-pad.ctl-row .ctl-clickind { gap: 8px; padding: 6px 8px; }
+  .ctl-pad.ctl-row .ctl-clicktxt { font-size: 14px; }
+}
+
+/* --------------------------------------------------------- board overlay */
+.ctl-overlay {
+  --ctl-lw: 3px;       /* crosshair and ring thickness */
+  --ctl-fs: 15px;      /* coordinate label */
+  position: absolute; inset: 0;
+  pointer-events: none; overflow: hidden;
+  container-type: size;
+  font-family: var(--ctl-mono);
+}
+@supports (width: 1cqw) {
+  .ctl-overlay { --ctl-lw: clamp(3px, .55cqw, 5px); --ctl-fs: clamp(12px, 2.1cqw, 19px); }
+}
+.ctl-mark { position: absolute; inset: 0; --ctl-x: 0; --ctl-y: 0; --ctl-side: 64; --ctl-cellpx: calc(100% / var(--ctl-side)); }
+.ctl-mark > i, .ctl-mark > b { position: absolute; display: block; }
+
+/* crosshair: four segments with a gap around the cell, so the cell stays visible */
+.ctl-xh, .ctl-xv { background: var(--ctl-click); box-shadow: 0 0 0 1.5px var(--ctl-outline); opacity: .4;
+  animation: ctl-line var(--ctl-ripple-ms) ease-out; }
+.ctl-xh { height: var(--ctl-lw); top: calc((var(--ctl-y) + .5) / var(--ctl-side) * 100% - var(--ctl-lw) / 2); }
+.ctl-xv { width: var(--ctl-lw); left: calc((var(--ctl-x) + .5) / var(--ctl-side) * 100% - var(--ctl-lw) / 2); }
+.ctl-xh.ctl-xa { left: 0; width: calc(var(--ctl-x) / var(--ctl-side) * 100% - 11px); }
+.ctl-xh.ctl-xb { left: calc((var(--ctl-x) + 1) / var(--ctl-side) * 100% + 11px); right: 0; }
+.ctl-xv.ctl-xa { top: 0; height: calc(var(--ctl-y) / var(--ctl-side) * 100% - 11px); }
+.ctl-xv.ctl-xb { top: calc((var(--ctl-y) + 1) / var(--ctl-side) * 100% + 11px); bottom: 0; }
+@keyframes ctl-line { 0%, 55% { opacity: 1; } }
+
+/* the clicked cell: white and magenta rings between dark hairlines, readable on any colour */
+.ctl-cell {
+  left: calc(var(--ctl-x) / var(--ctl-side) * 100%); top: calc(var(--ctl-y) / var(--ctl-side) * 100%);
+  width: calc(100% / var(--ctl-side)); height: calc(100% / var(--ctl-side));
+  box-shadow: 0 0 0 1.5px #000, 0 0 0 3.5px #fff, 0 0 0 6.5px var(--ctl-click), 0 0 0 8px #000;
+  animation: ctl-cell var(--ctl-ripple-ms) cubic-bezier(.2, .8, .2, 1);
+}
+@keyframes ctl-cell { 0% { transform: scale(3.2); } 22% { transform: scale(1); } }
+
+/* expanding ripple: two rings and a short filled burst */
+.ctl-ring, .ctl-burst {
+  left: calc((var(--ctl-x) + .5) / var(--ctl-side) * 100%); top: calc((var(--ctl-y) + .5) / var(--ctl-side) * 100%);
+  width: 34%; aspect-ratio: 1 / 1; border-radius: 50%; transform: translate(-50%, -50%); opacity: 0;
+}
+.ctl-ring { border: var(--ctl-lw) solid var(--ctl-click);
+  box-shadow: 0 0 0 1.5px var(--ctl-outline), inset 0 0 0 1.5px var(--ctl-outline), 0 0 18px 2px var(--ctl-click-glow);
+  animation: ctl-ring var(--ctl-ripple-ms) cubic-bezier(.15, .6, .3, 1); }
+.ctl-ring2 { animation-delay: calc(var(--ctl-ripple-ms) * .2); }
+.ctl-burst { background: var(--ctl-click); animation: ctl-burst var(--ctl-ripple-ms) ease-out; }
+@keyframes ctl-ring { 0% { width: 2%; opacity: 1; } 60% { opacity: .85; } 100% { width: 34%; opacity: 0; } }
+@keyframes ctl-burst { 0% { width: 1%; opacity: .75; } 30% { width: 13%; opacity: 0; } 100% { width: 13%; opacity: 0; } }
+
+.ctl-coord {
+  font: 700 var(--ctl-fs)/1 var(--ctl-mono); white-space: nowrap;
+  padding: .32em .5em .34em; border-radius: 3px;
+  background: #000; color: #fff; border: 2px solid var(--ctl-click); box-shadow: 0 0 0 1.5px #000;
+  opacity: .82; animation: ctl-coord var(--ctl-ripple-ms) ease-out;
+}
+@keyframes ctl-coord { 0%, 70% { opacity: 1; } }
+
+/* a mark restored without animation (mount after a click, or load()) */
+.ctl-mark.ctl-still > * { animation: none; }
+
+/* ------------------------------------------------------------ action tape */
+.ctl-tape { display: flex; justify-content: flex-end; overflow: hidden; width: 100%; font-family: var(--ctl-mono); min-height: 32px; }
+.ctl-tape.ctl-over { -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 34px); mask-image: linear-gradient(90deg, transparent 0, #000 34px); }
+.ctl-tape-run { display: flex; flex: none; min-width: 100%; align-items: center; gap: 4px; padding: 3px; }
+.ctl-tape-none { font: 500 11px/1 var(--ctl-mono); letter-spacing: .08em; color: var(--ctl-ink3); padding: 0 4px; }
+.ctl-chip {
+  flex: none; display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  height: 26px; min-width: 26px; padding: 0 5px;
+  background: var(--ctl-key); border: 1.5px solid var(--ctl-line); border-radius: 4px;
+  color: var(--ctl-ink2); font: 700 12px/1 var(--ctl-mono); white-space: nowrap;
+}
+.ctl-chip svg { flex: none; width: 14px; height: 14px; fill: currentColor; display: block; }
+.ctl-chip .ctl-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--ctl-click); }
+.ctl-chip.ctl-c-click { color: var(--ctl-ink); border-color: #6a2a54; }
+.ctl-chip.ctl-c-reset { color: var(--ctl-reset); border-color: #6b2320; }
+.ctl-chip.ctl-c-unknown { color: var(--ctl-ink3); border-style: dashed; }
+.ctl-chip.ctl-new { background: var(--ctl-hit); border-color: var(--ctl-hit); color: #000; box-shadow: 0 0 12px 1px var(--ctl-hit-glow); }
+.ctl-chip.ctl-c-click.ctl-new { background: var(--ctl-click); border-color: var(--ctl-click); color: #fff; box-shadow: 0 0 12px 1px var(--ctl-click-glow); }
+.ctl-chip.ctl-c-click.ctl-new .ctl-dot { background: #fff; }
+.ctl-chip.ctl-in { animation: ctl-chip-in var(--ctl-flash-ms) cubic-bezier(.2, .8, .2, 1); }
+@keyframes ctl-chip-in { 0% { transform: translateX(12px) scale(1.3); } }
+
+/* freeze(): hold every animation at a fixed point (screenshots, tests) */
+.ctl-frozen .ctl-btn.ctl-hit, .ctl-frozen .ctl-chip.ctl-in { animation-play-state: paused; animation-delay: calc(var(--ctl-flash-ms) * var(--ctl-freeze) * -1); }
+.ctl-frozen .ctl-mark > * { animation-play-state: paused; animation-delay: calc(var(--ctl-ripple-ms) * var(--ctl-freeze) * -1); }
+.ctl-frozen .ctl-mark > .ctl-ring2 { animation-delay: calc(var(--ctl-ripple-ms) * (.2 - var(--ctl-freeze))); }

@@ -1,0 +1,187 @@
+/* Live memory browser. Every class is prefixed mem- and every variable lives under .mem-root,
+   so this sheet can be loaded next to style.css without touching it. */
+.mem-root {
+  --mem-bg: #07090d; --mem-panel: #0e1218; --mem-panel2: #151b24; --mem-well: #05070a; --mem-line: #242d3a;
+  --mem-ink: #f1f4f8; --mem-ink2: #b3bdca; --mem-ink3: #7c8797;
+  --mem-blue: #1E93FF; --mem-yellow: #FFDC00; --mem-green: #4FCC30; --mem-red: #F93C31;
+  --mem-orange: #FF851B; --mem-magenta: #E53AA3; --mem-purple: #A356D6; --mem-cyan: #88D8F1;
+  --mem-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --mem-sans: "Instrument Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mem-acc: var(--mem-yellow);
+  display: grid; grid-template-columns: clamp(250px, 21vw, 340px) minmax(0, 1fr); gap: 10px; padding: 10px;
+  height: 100%; min-height: 0; min-width: 0; overflow: hidden;
+  background: var(--mem-bg); color: var(--mem-ink); font: 14px/1.4 var(--mem-sans); text-align: left;
+}
+.mem-root, .mem-root * { box-sizing: border-box; }
+.mem-root [hidden] { display: none !important; }
+.mem-root h3, .mem-root h4, .mem-root p, .mem-root pre { margin: 0; }
+.mem-root .mem-grow { flex: 1 1 0; min-width: 0; }
+
+/* rail: the four banks */
+.mem-rail { display: flex; flex-direction: column; gap: 8px; min-height: 0; min-width: 0; }
+.mem-root .mem-tile {
+  position: relative; flex: none; display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "name count" "desc count" "last last"; gap: 3px 10px; align-items: start;
+  padding: 10px 12px 9px 13px; text-align: left; cursor: pointer; color: var(--mem-ink); font: inherit;
+  background: var(--mem-panel); border: 1px solid var(--mem-line); border-left: 5px solid var(--mem-acc); border-radius: 6px;
+}
+.mem-root .mem-tile:hover { border-color: var(--mem-ink3); border-left-color: var(--mem-acc); }
+.mem-root .mem-tile.mem-on, .mem-root .mem-tile.mem-on:hover { background: var(--mem-panel2); border-color: var(--mem-acc); box-shadow: inset 0 0 0 1px var(--mem-acc); }
+.mem-tname { grid-area: name; display: flex; align-items: center; gap: 8px; font: 700 14px var(--mem-mono); letter-spacing: .1em; color: var(--mem-acc); }
+.mem-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--mem-acc); opacity: .3; flex: none; }
+.mem-count { grid-area: count; align-self: center; font: 700 clamp(40px, 3.7vw, 60px)/1 var(--mem-mono); letter-spacing: -.04em; white-space: nowrap; }
+.mem-tdesc { grid-area: desc; font-size: 12.5px; line-height: 1.3; color: var(--mem-ink2); }
+.mem-tlast { grid-area: last; margin-top: 3px; font: 500 11px var(--mem-mono); color: var(--mem-ink3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mem-tile.mem-ping { animation: mem-ping 1.3s ease-out; }
+.mem-tile.mem-ping .mem-dot { animation: mem-dot 1.3s ease-out; }
+.mem-tile.mem-ping .mem-count { animation: mem-bump 1.3s ease-out; }
+.mem-tile.mem-ping .mem-tlast { color: var(--mem-ink); }
+@keyframes mem-ping {
+  0% { background: color-mix(in srgb, var(--mem-acc) 42%, var(--mem-panel)); box-shadow: 0 0 0 0 var(--mem-acc), inset 0 0 0 2px var(--mem-acc); }
+  100% { box-shadow: 0 0 0 12px transparent, inset 0 0 0 1px transparent; }
+}
+@keyframes mem-dot { 0%, 55% { opacity: 1; transform: scale(1.9); box-shadow: 0 0 12px 3px var(--mem-acc); } 100% { opacity: .3; transform: none; } }
+@keyframes mem-bump { 0% { transform: scale(1.22); color: var(--mem-acc); } 60% { color: var(--mem-acc); } 100% { transform: none; } }
+
+.mem-feed { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; background: var(--mem-panel); border: 1px solid var(--mem-line); border-radius: 6px; overflow: hidden; }
+.mem-feed h3 { padding: 7px 10px 6px; font: 700 11px var(--mem-mono); letter-spacing: .12em; color: var(--mem-ink2); border-bottom: 1px solid var(--mem-line); flex: none; }
+.mem-feedlist { flex: 1; min-height: 0; overflow: hidden; padding: 4px 0; }
+.mem-fl { display: grid; grid-template-columns: auto 52px minmax(0, 1fr); gap: 7px; align-items: baseline; padding: 2px 10px; font: 500 11.5px/1.5 var(--mem-mono); color: var(--mem-ink2); cursor: pointer; }
+.mem-fl:first-child { animation: mem-flin .5s ease-out; }
+.mem-fl time { color: var(--mem-ink3); }
+.mem-fl b { letter-spacing: .04em; }
+.mem-fl span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mem-fl span em { font-style: normal; color: var(--mem-acc); }
+.mem-feednone { padding: 8px 10px; font-size: 12.5px; color: var(--mem-ink3); }
+@keyframes mem-flin { from { background: rgba(255, 255, 255, .22); } }
+.mem-op-insert { color: var(--mem-green); } .mem-op-update, .mem-op-replace { color: var(--mem-yellow); }
+.mem-op-delete { color: var(--mem-red); } .mem-op-refresh { color: var(--mem-cyan); }
+
+/* main column */
+.mem-main { display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 8px; min-height: 0; min-width: 0; }
+.mem-status { display: flex; align-items: center; gap: 10px; height: 38px; padding: 0 12px; min-width: 0; background: var(--mem-panel); border: 1px solid var(--mem-line); border-radius: 6px; font: 500 14px var(--mem-mono); color: var(--mem-ink2); white-space: nowrap; }
+.mem-status > i { width: 11px; height: 11px; border-radius: 50%; background: var(--mem-ink3); flex: none; }
+.mem-status > b { font-size: 14px; letter-spacing: .12em; color: var(--mem-ink3); flex: none; }
+.mem-status .mem-src { font-size: 12px; color: var(--mem-ink3); flex: none; }
+.mem-status .mem-last { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--mem-ink); }
+.mem-status .mem-last em { font-style: normal; font-weight: 700; color: var(--mem-acc); }
+.mem-status .mem-last strong { font-weight: 700; }
+.mem-status .mem-last.mem-dim { color: var(--mem-ink3); }
+.mem-conn-live > i { background: var(--mem-green); box-shadow: 0 0 10px 1px rgba(79, 204, 48, .7); animation: mem-blink 1.6s ease-in-out infinite; }
+.mem-conn-live > b { color: var(--mem-green); }
+.mem-conn-reconnecting > i, .mem-conn-connecting > i { background: var(--mem-orange); animation: mem-blink .7s ease-in-out infinite; }
+.mem-conn-reconnecting > b, .mem-conn-connecting > b { color: var(--mem-orange); }
+.mem-conn-reconnecting { border-color: var(--mem-orange); }
+@keyframes mem-blink { 50% { opacity: .35; } }
+
+.mem-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.mem-title { font: 700 24px/1.1 var(--mem-mono); letter-spacing: -.02em; color: var(--mem-acc); white-space: nowrap; }
+.mem-title small { font: 500 12px var(--mem-mono); letter-spacing: 0; color: var(--mem-ink3); margin-right: 1px; }
+.mem-sub { display: flex; align-items: baseline; gap: 9px; font-size: 13px; color: var(--mem-ink2); min-width: 0; white-space: nowrap; }
+.mem-sub b { font: 700 12.5px var(--mem-mono); color: var(--mem-ink); flex: none; }
+.mem-sub span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.mem-root .mem-search { width: clamp(180px, 22vw, 340px); flex: none; height: 32px; padding: 0 10px; font: 500 13px var(--mem-mono); color: var(--mem-ink); background: var(--mem-well); border: 1px solid var(--mem-line); border-radius: 4px; outline: none; }
+.mem-root .mem-search:focus { border-color: var(--mem-acc); }
+.mem-root .mem-search::placeholder { color: var(--mem-ink3); }
+.mem-root .mem-btn { height: 32px; padding: 0 10px; flex: none; cursor: pointer; font: 700 11px var(--mem-mono); letter-spacing: .08em; color: var(--mem-ink2); background: var(--mem-panel2); border: 1px solid var(--mem-line); border-radius: 4px; white-space: nowrap; }
+.mem-root .mem-btn:hover { border-color: var(--mem-ink3); color: var(--mem-ink); }
+.mem-root .mem-btn.mem-on { background: var(--mem-ink); border-color: var(--mem-ink); color: #000; }
+.mem-seg { display: flex; flex: none; }
+.mem-root .mem-seg .mem-btn { border-radius: 0; margin-left: -1px; }
+.mem-root .mem-seg .mem-btn:first-child { border-radius: 4px 0 0 4px; margin-left: 0; }
+.mem-root .mem-seg .mem-btn:last-child { border-radius: 0 4px 4px 0; }
+.mem-runf { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 4px 0 9px; flex: none; font: 500 12px var(--mem-mono); color: var(--mem-cyan); border: 1px solid var(--mem-cyan); border-radius: 4px; max-width: 30ch; }
+.mem-runf span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mem-root .mem-runf button { border: 0; background: none; color: var(--mem-cyan); font: 700 14px var(--mem-mono); cursor: pointer; padding: 0 5px; }
+
+.mem-list { min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 4px; scrollbar-width: thin; scrollbar-color: var(--mem-line) transparent; }
+.mem-empty { padding: 28px 18px; border: 1px dashed var(--mem-line); border-radius: 6px; color: var(--mem-ink3); font: 500 15px/1.5 var(--mem-mono); }
+.mem-empty b { display: block; color: var(--mem-ink2); font-size: 18px; margin-bottom: 4px; }
+.mem-empty.mem-err b { color: var(--mem-red); }
+
+/* document cards */
+.mem-card { flex: none; background: var(--mem-panel); border: 1px solid var(--mem-line); border-left: 4px solid var(--mem-acc); border-radius: 6px; padding: 9px 12px 11px 13px; min-width: 0; transition: background 1.2s, box-shadow 1.2s, opacity .4s; }
+.mem-chead { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 9px; min-width: 0; }
+.mem-id { font: 700 17px var(--mem-mono); letter-spacing: -.01em; color: var(--mem-acc); overflow-wrap: anywhere; }
+.mem-chip { font: 700 10.5px var(--mem-mono); letter-spacing: .08em; text-transform: uppercase; padding: 2px 7px; border: 1px solid var(--mem-line); border-radius: 3px; color: var(--mem-ink2); white-space: nowrap; }
+.mem-chip.mem-st-active { background: var(--mem-green); border-color: var(--mem-green); color: #000; }
+.mem-chip.mem-st-retired, .mem-chip.mem-st-reverted { border-color: var(--mem-red); color: var(--mem-red); }
+.mem-chip.mem-st-superseded { color: var(--mem-ink3); }
+.mem-chip.mem-game { color: var(--mem-ink); border-color: var(--mem-ink3); text-transform: none; letter-spacing: 0; font-size: 12px; }
+.mem-tag { font: 500 12px var(--mem-mono); color: var(--mem-cyan); white-space: nowrap; }
+.mem-kv { font: 500 12px var(--mem-mono); color: var(--mem-ink3); white-space: nowrap; }
+.mem-kv b { color: var(--mem-ink); font-weight: 700; }
+.mem-ver { font: 700 13px var(--mem-mono); color: #000; background: var(--mem-ink); border-radius: 3px; padding: 1px 7px; white-space: nowrap; }
+.mem-ts { font: 500 12px var(--mem-mono); color: var(--mem-ink3); white-space: nowrap; }
+.mem-root a.mem-run { font: 500 12px var(--mem-mono); color: var(--mem-cyan); cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; overflow-wrap: anywhere; }
+.mem-root a.mem-run:hover { color: #fff; }
+.mem-mark { font: 700 11px var(--mem-mono); letter-spacing: .1em; padding: 3px 8px; border-radius: 3px; color: #000; white-space: nowrap; }
+.mem-mark-new { background: var(--mem-green); } .mem-mark-upd { background: var(--mem-yellow); } .mem-mark-del { background: var(--mem-red); color: #fff; }
+.mem-root .mem-rawbtn { height: 26px; font-size: 10px; }
+
+.mem-cbody { margin-top: 8px; min-width: 0; }
+.mem-card.mem-rawopen .mem-cbody { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+.mem-view { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.mem-big { font: 500 19px/1.38 var(--mem-sans); color: var(--mem-ink); max-width: 96ch; text-wrap: pretty; }
+.mem-why { font-size: 13.5px; color: #ffb5af; max-width: 96ch; }
+.mem-why b { font: 700 10.5px var(--mem-mono); letter-spacing: .1em; color: var(--mem-red); margin-right: 6px; }
+.mem-stats { display: flex; flex-wrap: wrap; gap: 4px 20px; font: 500 12px var(--mem-mono); color: var(--mem-ink3); }
+.mem-stats b { font-size: 17px; font-weight: 700; color: var(--mem-ink); margin-right: 5px; }
+.mem-sec h4, .mem-rcol h4 { font: 700 10.5px var(--mem-mono); letter-spacing: .12em; color: var(--mem-ink3); margin-bottom: 3px; }
+.mem-sec h4 b, .mem-rcol h4 b { color: var(--mem-ink2); margin-left: 4px; }
+.mem-evd { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; font-size: 13.5px; color: var(--mem-ink2); }
+.mem-evd i { font-style: normal; color: var(--mem-ink3); }
+.mem-evd .mem-eg { font: 700 13px var(--mem-mono); color: var(--mem-ink); }
+.mem-evd .mem-el { font: 500 12.5px var(--mem-mono); color: var(--mem-ink2); }
+.mem-evd .mem-er { color: var(--mem-ink); flex: 0 1 auto; }
+.mem-prose { font: 13px/1.5 var(--mem-mono); color: #dbe4ef; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--mem-well); border: 1px solid var(--mem-line); border-radius: 4px; padding: 9px 11px; max-height: 330px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--mem-line) transparent; }
+.mem-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.mem-ref { font: 500 12px var(--mem-mono); color: var(--mem-orange); border: 1px solid rgba(255, 133, 27, .5); border-radius: 3px; padding: 2px 7px; white-space: nowrap; }
+.mem-lid { font: 700 12px var(--mem-mono); color: var(--mem-yellow); border: 1px solid rgba(255, 220, 0, .4); border-radius: 3px; padding: 2px 7px; white-space: nowrap; }
+.mem-none { color: var(--mem-ink3); font-size: 13px; }
+
+.mem-rb { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px 18px; }
+.mem-card.mem-rawopen .mem-rb { grid-template-columns: minmax(0, 1fr); }
+.mem-rcol.mem-v h4 { color: var(--mem-green); } .mem-rcol.mem-r h4 { color: var(--mem-red); } .mem-rcol.mem-o h4 { color: var(--mem-yellow); }
+.mem-rule { display: flex; gap: 7px; align-items: baseline; padding: 3px 6px 3px 8px; border-left: 3px solid var(--mem-line); font-size: 14px; line-height: 1.35; margin-top: 3px; }
+.mem-v .mem-rule { border-left-color: var(--mem-green); } .mem-r .mem-rule { border-left-color: var(--mem-red); } .mem-o .mem-rule { border-left-color: var(--mem-yellow); }
+.mem-rule .mem-lv { font: 700 10.5px var(--mem-mono); color: var(--mem-ink3); flex: none; }
+.mem-rule small { display: block; font-size: 12.5px; color: var(--mem-ink3); text-decoration: none; }
+.mem-r .mem-rule .mem-rt > span { text-decoration: line-through; text-decoration-color: var(--mem-red); color: var(--mem-ink2); }
+.mem-rule.mem-rnew { background: rgba(255, 220, 0, .09); }
+.mem-rule.mem-rnew::after { content: "NEW"; margin-left: auto; flex: none; font: 700 9.5px var(--mem-mono); letter-spacing: .1em; color: var(--mem-yellow); }
+
+.mem-gen { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 8px 22px; align-items: start; }
+.mem-card.mem-rawopen .mem-gen { grid-template-columns: minmax(0, 1fr); }
+.mem-gen > div { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.mem-ratio { font-size: 15px; line-height: 1.42; color: var(--mem-ink); max-width: 84ch; text-wrap: pretty; }
+.mem-diff { display: grid; gap: 2px; font: 500 13px var(--mem-mono); }
+.mem-diff > div { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 8px; align-items: baseline; }
+.mem-diff .mem-dk { font-size: 10.5px; font-weight: 700; letter-spacing: .1em; color: var(--mem-ink3); }
+.mem-diff .mem-dv { display: flex; flex-wrap: wrap; gap: 1px 11px; }
+.mem-add { color: var(--mem-green); } .mem-rem { color: var(--mem-red); text-decoration: line-through; } .mem-rev { color: var(--mem-yellow); } .mem-knob { color: var(--mem-cyan); }
+.mem-runs { display: flex; flex-wrap: wrap; gap: 2px 12px; }
+
+/* the raw MongoDB document */
+.mem-rawwrap { min-width: 0; margin-top: 8px; }
+.mem-card.mem-rawopen .mem-rawwrap { margin-top: 0; }
+.mem-rawcap { display: flex; gap: 10px; align-items: baseline; padding: 4px 10px; font: 700 11px var(--mem-mono); color: var(--mem-ink2); background: var(--mem-panel2); border: 1px solid var(--mem-line); border-bottom: 0; border-radius: 4px 4px 0 0; white-space: nowrap; }
+.mem-rawcap span { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.mem-rawcap em { flex: none; font-style: normal; font-weight: 500; color: var(--mem-green); }
+.mem-raw { font: 12px/1.5 var(--mem-mono); color: var(--mem-ink2); white-space: pre-wrap; overflow-wrap: anywhere; background: var(--mem-well); border: 1px solid var(--mem-line); border-radius: 0 0 4px 4px; padding: 8px 10px; max-height: 460px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--mem-line) transparent; }
+.mem-jk { color: var(--mem-cyan); } .mem-js { color: #e3e9f1; } .mem-jn { color: var(--mem-orange); }
+
+/* real time: inserted, updated, deleted */
+.mem-card.mem-new { animation: mem-in .5s cubic-bezier(.2, .8, .2, 1); background: rgba(79, 204, 48, .11); box-shadow: inset 0 0 0 2px var(--mem-green); }
+.mem-card.mem-upd { animation: mem-flash 1.3s ease-out; background: rgba(255, 220, 0, .08); box-shadow: inset 0 0 0 2px var(--mem-yellow); }
+.mem-card.mem-del { background: rgba(249, 60, 49, .12); box-shadow: inset 0 0 0 2px var(--mem-red); }
+.mem-card.mem-del .mem-view, .mem-card.mem-del .mem-view *, .mem-card.mem-del .mem-id { text-decoration: line-through; text-decoration-color: var(--mem-red); text-decoration-thickness: 2px; color: var(--mem-ink3); }
+.mem-card.mem-out { opacity: 0; transform: translateX(28px); transition: opacity .32s, transform .32s; }
+@keyframes mem-in { from { opacity: 0; transform: translateY(-26px); } }
+@keyframes mem-flash { 0% { background: rgba(255, 220, 0, .5); } 100% { background: rgba(255, 220, 0, .08); } }
+
+@media (max-width: 1100px) {
+  .mem-root { grid-template-columns: 230px minmax(0, 1fr); }
+  .mem-sub span { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { .mem-root * { animation-duration: .01s !important; } }

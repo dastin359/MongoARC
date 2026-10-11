@@ -2,9 +2,9 @@
 
 Database: `MONGO_DB` (default `mongoarc`). Names, indexes and the frame codec live in `mongoarc/db.py`; import them, do not retype them.
 
-MongoDB is harness-side only. The game agent never talks to it. Three components share it:
+The game agent never holds database credentials. It reaches its long-term memory through a loopback gateway (`mongoarc.memory_gateway`, tool `memory.py` in its workspace) that searches `lessons`, `notes` and `rulebooks` and appends a `recall` event per search. It writes memory only by saving prose under `notes/`, which the collector mirrors. Three harness components share the database:
 
-- the **collector** tails each run directory and writes `runs`, `actions`, `events`, `rulebooks`;
+- the **collector** tails each run directory and writes `runs`, `actions`, `events`, `rulebooks`, `notes`;
 - the **evolution loop** reads those, and writes `lessons`, `generations` and the `generation`/`metrics` fields of `runs`;
 - the **live view** only reads.
 
@@ -115,6 +115,7 @@ level    int   level at that moment
 | `outbox` | `outbox_kind` (level_cleared, note, ...), `text` | `<out_dir>/harness_outbox.jsonl` |
 | `rulebook` | `version`, `added` ({verified, refuted, open_questions}) | rules.json changed |
 | `harness` | `what` (e.g. `lessons_injected`, `coach_note`, `run_started`, `run_ended`), `text`, `lessons` ([ids]) | written by the launcher, not the collector |
+| `recall` | `query`, `lessons` ([ids] returned), `notes` ([ids] returned), `text` | the agent searched long-term memory (`memory.py recall ...`); written by `mongoarc.memory_gateway` |
 
 The launcher writes `harness` events itself. To keep `seq` unique it does not pick a number: it calls `mongoarc.db.next_seq(db, run_id, count=1)`, an atomic `$inc` on `runs.last_seq` that returns the first reserved number (the first seq of a run is 1). The collector issues its sequence numbers the same way.
 
@@ -128,6 +129,26 @@ refuted  [{rule, scope, level, note}]
 open_questions [str]
 added    {"verified": [...], "refuted": [...], "open_questions": [...]}   entries new in this version
 ```
+
+## `notes`: the agent's own written memory, one document per text file
+
+The agent keeps prose in `<workspace>/notes/` (markdown or plain text) and code in `<workspace>/scripts/`. Only the prose is pushed: the collector mirrors every text file under `notes/` into this collection and keeps it in sync. A changed file updates its document in place (`version` + 1); a deleted file deletes its document. Scripts are never pushed. A note refers to a script by its filename, which the collector extracts into `refs`. Text index on `text` and `path`.
+
+```
+_id        "<run_id>:<path relative to the workspace>"     e.g. "g01-mk03-lava-...:notes/mechanics.md"
+run_id, game_id, generation (int|null)
+path       str   relative to the workspace, always under notes/
+text       str   file content (truncated to 20000 chars)
+refs       [str] script filenames mentioned in the text (e.g. "scripts/bfs.py")
+version    int   1 on first sight, +1 on every content change
+created_at, updated_at   datetime
+```
+
+Text files are those ending in .md, .txt, .markdown, or with no extension, that decode as UTF-8; everything else under `notes/` (PNG, .py, .json, .jsonl) is skipped.
+
+## Memory banks
+
+The live view presents four collections as the harness's memory banks (`db.MEMORY_BANKS`): `lessons` (distilled, cross-game), `notes` (the agent's prose, per game), `rulebooks` (what each game's agent verified and refuted) and `generations` (the harness's own versions). All are plain collections: documents are inserted, updated in place and deleted as the memory changes.
 
 ## `lessons`: the harness's long-term memory
 
@@ -143,7 +164,8 @@ created_gen int   generation that introduced it
 created_at  datetime
 status      "active" | "retired"
 retired_reason str|null
-stats       {"runs": [run_id], "injected": int, "efficiency_sum": float, "wins": int}
+stats       {"runs": [run_id], "injected": int, "efficiency_sum": float, "wins": int,
+             "recalled": int}   # recalled: times the agent pulled it through memory.py
 ```
 
 ## `generations`: versions of the harness itself
@@ -159,7 +181,7 @@ status       "active" | "superseded" | "reverted"
 lessons      [str]  lesson ids carried
 addendum     str    the markdown appended to the workspace CLAUDE.md
 knobs        {"budget_multiple": float, "max_nudges": int, "coach_stuck_factor": float, ...}
-tools        [{"name": str, "code": str, "source_run": str, "why": str}]
+tools        []   reserved; always empty: every game starts from a fresh workspace and no scripts are carried over
 diff         {"added_lessons": [ids], "retired_lessons": [ids], "revised_lessons": [ids],
               "knob_changes": {name: [old, new]}, "added_tools": [names]}
 rationale    str   the distiller's explanation of the change
