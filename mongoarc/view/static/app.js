@@ -21,13 +21,11 @@ async function api(path) {
 // PAGE is small on purpose: a real ARC-AGI-3 action carries a dozen or more 64x64 boards, so 100 rows are
 // several megabytes and seconds of waiting before the first board. 25 rows put a board on screen in about a second.
 const FRAME_MS = 60, STEP_GAP_MS = 220, PAGE = 25, EV_PAGE = 500, SPEEDS = [1, 2, 4, 8, 16];
-// ARC palette accents, ordered so neighbouring generations stay distinct under colour-vision deficiency.
-const GEN_COLORS = ['#1E93FF', '#FFDC00', '#E53AA3', '#4FCC30', '#A356D6', '#FF851B'];
-const genColor = (g) => (Number.isInteger(g) ? GEN_COLORS[g % GEN_COLORS.length] : '#8a94a3');
+const RUN_COLOR = '#1E93FF';  // every point of the selected run in the LEVELS chart
 
 const q = new URLSearchParams(location.search);
 const S = {
-  tab: ['evolution', 'memory'].includes(q.get('tab')) ? q.get('tab') : 'live',
+  tab: { levels: 'levels', evolution: 'levels', memory: 'memory' }[q.get('tab')] || 'live',  // ?tab=evolution is the tab's earlier name
   mode: ['live', 'replay'].includes(q.get('mode')) ? q.get('mode') : (q.get('run') ? 'auto' : 'live'),
   speed: SPEEDS.includes(+q.get('speed')) ? +q.get('speed') : 1,
   playing: q.get('autoplay') === '1',
@@ -37,7 +35,7 @@ const S = {
   actions: [], early: [], stats: [], statTail: null, statN: -1, statsOk: true, base: 0, loadedTo: -1, pos: -1,
   events: [], lastSeq: 0, feedStart: 0, feedEnd: 0, feedNone: true, feedPinned: true,
   rulebooks: [], rbKey: null, rbDirty: true, rbLoaded: false, evLoaded: false, liveInit: false, settled: false,
-  lessons: [], gens: [], evoEvents: [], evoPartial: false, evoFor: null,  // the selected run's own generations, lessons, memory searches
+  notes: [], evoEvents: [], evoPartial: false, evoFor: null,  // the selected run's notes and its memory events (writes, searches, harness prompts)
   evoSig: '', evoDirty: true, evoPending: false, evoAgain: false, evoKey: '', sig: {},
   epoch: 0,   // bumped when the run or mode changes; stale async work checks it
   play: 0,    // bumped on every seek; stale animation callbacks check it
@@ -226,9 +224,8 @@ async function selectRun(id, mode) {
     base: 0, loadedTo: -1, pos: -1, events: [], lastSeq: 0, feedStart: 0, feedEnd: 0, feedNone: true, feedPinned: true,
     rulebooks: [], rbKey: null, rbDirty: true, rbLoaded: false, evLoaded: false, settled: false, pollN: 0, sig: {} });
   if (mode) S.mode = mode;
-  if (S.evoFor !== id) { S.gens = []; S.lessons = []; S.evoEvents = []; S.evoPartial = false; S.evoFor = null; markEvolution(); }
+  if (S.evoFor !== id) { S.notes = []; S.evoEvents = []; S.evoPartial = false; S.evoFor = null; markEvolution(); }
   AC.reset();
-  MB.at = 0;  // this run's notes on the next tick, not a second and a half later
   $('#feedIn').replaceChildren();
   clearBoard(`Loading ${id}`);
   let r, base = 0;
@@ -261,18 +258,16 @@ async function selectRun(id, mode) {
   S.loadedTo = S.pos = S.base - 1;
   S.run = r;
   clearBoard(`Waiting for the first action of ${id}.`);
-  renderMode(); renderPicker(); renderHud(); renderHarness(); syncFeed(); syncRulebook(); syncUrl();
+  renderMode(); renderPicker(); renderHud(); renderMemory(); syncFeed(); syncRulebook(); syncUrl();
   ensureEvolution(r);
   await pollRun();
 }
-// The run's generations as the page holds them are behind (another run was selected, or a level was just cleared and
-// runs.gen_k moved on): fetch them now, not on the next slow tick.
+// The notes and memory events the page holds are another run's: fetch this run's now, not on the next slow tick.
 function ensureEvolution(r) {
   if (!r) return;
-  const key = r._id + ':' + r.gen_k;  // asked once per run and generation; the slow tick covers everything else
-  if (S.evoKey === key && (S.evoFor === r._id || S.evoPending)) return;
+  if (S.evoKey === r._id && (S.evoFor === r._id || S.evoPending)) return;
   if (S.evoPending) { S.evoAgain = true; return; }
-  S.evoKey = key; S.evoPending = true;
+  S.evoKey = r._id; S.evoPending = true;
   refreshEvolution().catch(console.warn).finally(() => {
     S.evoPending = false;
     if (S.evoAgain) { S.evoAgain = false; ensureEvolution(evoRun()); }
@@ -289,10 +284,9 @@ async function pollRun() {
       const r = await api(`/api/runs/${enc(id)}`);
       if (ep !== S.epoch) return;
       S.run = r;
-      if (Number.isInteger(r.gen_k) && S.evoFor === id && !S.gens.some((g) => g.k === r.gen_k)) ensureEvolution(r);
     }
     let got = 0;
-    // The feed and the rule book first: they are small, and must not wait behind megabytes of boards.
+    // The feed first: it is small, and must not wait behind megabytes of boards.
     for (let page = 0; page < 5; page++) {
       const list = await api(`/api/runs/${enc(id)}/events?after_seq=${S.lastSeq}&limit=${EV_PAGE}`);
       if (ep !== S.epoch) return;
@@ -314,7 +308,7 @@ async function pollRun() {
       if (list.length < PAGE) break;
     }
     S.settled = got === 0 && runSettled();
-    renderHud(); renderHarness(); syncScrub(); syncFeed(); syncRulebook(); renderMode(); markEvolution();
+    renderHud(); renderMemory(); syncScrub(); syncFeed(); syncRulebook(); renderMode(); markEvolution();
   } finally { S.polling = false; }
 }
 function afterActions() {
@@ -338,7 +332,7 @@ async function refreshRuns() {
   // A run still marked running that has not moved since a later run started (and ended) is a killed game, not a live one.
   const at = (v) => Date.parse(v) || 0;
   const dead = (r, i) => S.runs.slice(0, i).some((s) => s.status !== 'running' && at(r.updated_at) < at(s.started_at));
-  // Of the games in flight, one with per-level memory comes before a control run: it is the one that evolves.
+  // Of the games in flight, one with memory comes before a control run.
   const alive = S.runs.filter((r, i) => r.status === 'running' && !dead(r, i));
   const running = alive.find((r) => r.role !== 'control') || alive[0];
   const pick = running || S.runs[0];
@@ -347,31 +341,25 @@ async function refreshRuns() {
     return selectRun(pick._id, S.mode === 'auto' ? 'live' : S.mode);
   }
 }
-// Generations and lessons belong to one run: nothing is read from, or shown for, any other game.
+// Notes and memory events belong to one run: nothing is read from, or shown for, any other game.
 async function refreshEvolution() {
   const rid = S.runId;
-  if (!rid) { S.gens = []; S.lessons = []; S.evoEvents = []; S.evoFor = null; return markEvolution(); }
-  // The memory searches are read for the evolution tab only (and once per run, so the tab opens with them).
-  const wantEv = S.tab === 'evolution' || S.evoFor !== rid;
-  const [gens, lessons, evs] = await Promise.all([api(`/api/generations?run_id=${enc(rid)}`), api(`/api/lessons?run_id=${enc(rid)}`),
-    wantEv ? api(`/api/runs/${enc(rid)}/events?kind=recall,harness&limit=2000`) : null]);
+  if (!rid) { S.notes = []; S.evoEvents = []; S.evoFor = null; markEvolution(); return renderMemory(); }
+  const [notes, evs] = await Promise.all([api(`/api/memory/notes?run_id=${enc(rid)}&limit=500`),
+    api(`/api/runs/${enc(rid)}/events?kind=recall,harness,memory_write&limit=2000`)]);
   if (rid !== S.runId) return;
-  // Filtered here as well: a server from before the per-run design ignores run_id and kind and answers with everything.
-  S.gens = gens.filter((g) => g.run_id === rid).sort((a, b) => (a.k || 0) - (b.k || 0));
-  S.lessons = lessons.filter((l) => l.run_id === rid);
-  if (evs) {
-    S.evoEvents = evs.filter((e) => e.kind === 'recall' || e.kind === 'harness');
-    S.evoPartial = evs.length >= 2000 && S.evoEvents.length < evs.length;
-  }
+  // Filtered here as well: a server that ignores run_id or kind answers with everything.
+  S.notes = notes.filter((x) => x.run_id === rid);
+  S.evoEvents = evs.filter((e) => e.kind === 'recall' || e.kind === 'harness' || e.kind === 'memory_write');
+  S.evoPartial = evs.length >= 2000;
   S.evoFor = rid;
-  markEvolution(); renderHarness();
+  markEvolution(); renderMemory(); syncRulebook();
 }
 let tickN = 0;
 async function tick() {
-  pollMemory();
   const n = tickN++;
   if (n % 6 === 0 || !S.runId) await refreshRuns();
-  if (n % 10 === 0) await refreshEvolution();
+  if (S.tab !== 'memory' && n % 4 === 0) await refreshEvolution().catch(console.warn);  // the notes panels follow a live game
   if (S.runId && S.run) await pollRun();
 }
 async function loop() {
@@ -405,9 +393,8 @@ function renderHud() {
   $('#gameId').title = S.runId || '';
   const chip = $('#statusChip');
   chip.textContent = r ? r.status || '' : ''; chip.className = 'chip ' + ((r && r.status) || '');
-  // The run's CURRENT generation: it moves on each time a level is cleared.
+  // Only a run recorded under the earlier design carries gen_k; a run of the memory design shows no such chip.
   $('#genChip').textContent = r && Number.isInteger(r.gen_k) ? 'GEN ' + r.gen_k : '';
-  $('#genChip').title = 'current harness generation of this run: one per cleared level';
   $('#roleChip').textContent = isControl(r) ? 'CONTROL' : '';
   const la = $('#lastAct');
   la.replaceChildren();
@@ -481,6 +468,65 @@ function renderPicker() {
   sel.value = S.follow ? '' : S.runId || '';
 }
 
+/* ---------- memory panels: this run's notes, and what it last did with its memory ---------- */
+const MEM_OPS = { save: 'SAVED', update: 'UPDATED', delete: 'DELETED' };
+// "<run_id>:mem/3" is note N3 of its run.
+const noteShort = (id) => { const m = /mem\/([^/:]+)$/.exec(String(id)); return m ? 'N' + m[1] : String(id).split(':').pop(); };
+const isMemNote = (x) => x.source === 'tool' || /:mem\/[^/:]+$/.test(String(x._id));
+const changedAt = (x) => Date.parse(x.updated_at || x.created_at) || 0;
+// The selected run's notes, newest change first.
+function runNotes() { return S.evoFor === S.runId ? S.notes.filter(isMemNote).sort((a, b) => changedAt(b) - changedAt(a)) : []; }
+function openMemoryTab() {
+  if (window.MemoryTab) { MemoryTab.setRun(S.runId || ''); MemoryTab.open('notes'); }
+  setTab('memory');
+}
+function syncRulebook() {
+  const notes = runNotes();
+  // A run recorded under the earlier design has rule books and no memory notes: its panel stays the rule book.
+  if (!notes.length && S.rulebooks.length) return syncOldRulebook();
+  const key = ['notes', S.runId, S.evoFor, S.rbLoaded, notes.map((x) => x._id + '.' + x.version).join(',')].join(':');
+  if (key === S.rbKey) return;
+  S.rbKey = key;
+  $('#rbTitle').textContent = 'MEMORY NOTES';
+  $('#rbVersion').textContent = notes.length ? `${notes.length} in db.notes, newest change first` : '';
+  const box = $('#rulebook');
+  box.replaceChildren();
+  if (!notes.length) {
+    return void box.append(el('div', 'none', !S.run ? 'No run selected.'
+      : isControl(S.run) ? 'None: a control run has no memory.'
+      : S.evoFor !== S.runId ? 'Loading the notes of this run.'
+      : 'No notes yet. Every lesson the agent saves with memory.py appears here as a MongoDB document.'));
+  }
+  for (const x of notes) {
+    const d = el('div', 'mnote'), h = el('div', 'mh');
+    h.append(el('b', null, noteShort(x._id)), el('strong', null, x.title || ''), el('span', null, 'v' + (x.version || 1)));
+    d.append(h, el('pre', null, x.text || ''));
+    d.onclick = openMemoryTab;
+    box.append(d);
+  }
+  box.scrollTop = 0;
+}
+function renderMemory() {
+  const mine = !!S.runId && S.evoFor === S.runId, notes = runNotes();
+  const evs = mine ? S.evoEvents.filter((e) => e.kind === 'memory_write' || e.kind === 'recall') : [];
+  if (!once('mempanel', [S.runId, mine, notes.length, evs.length, evs.length ? evs[evs.length - 1].seq : 0, isControl(S.run)])) return;
+  $('#memCount').textContent = mine ? String(notes.length) : '-';
+  $('#memBanksInfo').textContent = S.runId ? 'click to open in the MEMORY tab' : '';
+  const box = $('#memEvents');
+  box.replaceChildren();
+  if (!evs.length) {
+    return void box.append(el('div', 'none', !S.runId ? 'No run selected.' : isControl(S.run) ? 'A control run has no memory.'
+      : !mine ? 'Loading.' : 'Nothing saved or searched yet.'));
+  }
+  for (const e of evs.slice(-5).reverse()) {  // the last five, newest first
+    const search = e.kind === 'recall', row = el('div', 'mev ' + (search ? 'search' : e.op || ''));
+    row.append(el('b', null, search ? 'SEARCHED' : MEM_OPS[e.op] || 'WROTE'), el('span', 'lv', Number.isInteger(e.level) ? 'L' + e.level : ''),
+      el('span', 'txt', search ? e.query || '' : [e.note ? noteShort(e.note) : '', e.title || ''].filter(Boolean).join('  ')));
+    box.append(row);
+  }
+}
+
+/* The rule book of a run recorded under the earlier design. */
 function ruleRow(e, cls, isNew) {
   const d = el('div', `rule ${cls}${isNew ? ' new' : ''}`);
   if (typeof e === 'string') { d.append(el('span', 'txt', e)); return d; }
@@ -491,7 +537,7 @@ function ruleRow(e, cls, isNew) {
   return d;
 }
 const ruleKey = (e) => (typeof e === 'string' ? e : JSON.stringify([e.rule, e.level]));
-function syncRulebook() {
+function syncOldRulebook() {
   let rb = null;
   if (S.mode === 'live') rb = S.rulebooks[S.rulebooks.length - 1] || null;
   else for (const b of S.rulebooks) if ((Number.isInteger(b.action_n) ? b.action_n : -1) <= S.pos) rb = b;
@@ -503,12 +549,9 @@ function syncRulebook() {
   S.rbKey = key;
   const box = $('#rulebook');
   box.replaceChildren();
+  $('#rbTitle').textContent = 'RULE BOOK';
   $('#rbVersion').textContent = rb ? `version ${rb.version} of ${S.rulebooks.length}, at action ${rb.action_n}` : '';
-  if (!rb) {
-    return void box.append(el('div', 'none', S.run && !S.rbLoaded ? 'Loading the rule book.'
-      : S.rulebooks.length ? 'No rules recorded up to this action.'
-      : 'No rule book yet. The agent records what it verified each time it clears a level.'));
-  }
+  if (!rb) return void box.append(el('div', 'none', 'No rules recorded up to this action.'));
   const wrap = el('div', 'rb'), added = rb.added || {};
   for (const [field, cls, h, title] of [['verified', 'verified', 'v', 'VERIFIED'], ['refuted', 'refuted', 'r', 'REFUTED'],
     ['open_questions', 'open', 'o', 'OPEN QUESTIONS']]) {
@@ -519,62 +562,6 @@ function syncRulebook() {
   box.append(wrap);
   const fresh = box.querySelector('.new');  // bring what this version added into view
   box.scrollTop = fresh ? Math.max(0, fresh.getBoundingClientRect().top - box.getBoundingClientRect().top - 30) : 0;
-}
-function lessonRow(id) {
-  const l = S.lessons.find((x) => x._id === id), d = el('div', 'lesson');
-  d.append(el('span', 'id', id));
-  if (!l) { d.append(el('span', 'note', S.evoPending ? 'loading' : 'not in the lessons collection')); return d; }
-  d.append(el('span', 'kind', l.kind || 'lesson'), l.text || '');
-  return d;
-}
-function renderHarness() {}  // the panel it filled was replaced by the memory panel below
-
-/* ---------- memory panel: the banks, live, and what this run has written ---------- */
-const MB = { banks: [], counts: {}, notes: [], at: 0, busy: false, rid: null };
-async function pollMemory() {
-  if (MB.busy || S.tab !== 'live' || Date.now() - MB.at < 1500) return;
-  MB.busy = true; MB.at = Date.now();
-  try {
-    const rid = S.runId;
-    const banks = await api('/api/memory/banks' + (rid ? `?run_id=${enc(rid)}` : ''));
-    // Memory is per game: the counts are this run's documents where the server reports them (run_count).
-    const own = !!rid && banks.every((bk) => Number.isInteger(bk.run_count)), cnt = (bk) => (own ? bk.run_count : bk.count);
-    const notes = rid ? await api(`/api/memory/notes?run_id=${enc(rid)}&limit=20`) : [];
-    if (rid !== S.runId) { MB.at = 0; return; }  // the run changed while this was in flight: ask again for the new one
-    if (MB.rid !== rid) { MB.rid = rid; MB.counts = {}; }
-    $('#memBanksInfo').textContent = own ? "this run's documents; click a bank to open them" : 'all runs; click a bank to open its documents';
-    const box = $('#memBanks');
-    if (!box.children.length || banks.length !== MB.banks.length) {
-      box.replaceChildren(...banks.map((bk) => {
-        const row = el('button', 'mb mb-' + bk.name);
-        row.append(el('b', null, String(cnt(bk))), el('span', null, { rulebooks: 'rule books', generations: 'harness gens' }[bk.name] || bk.name));
-        row.onclick = () => { setTab('memory'); if (window.MemoryTab) { MemoryTab.setRun(S.runId || ''); MemoryTab.open(bk.name); } };
-        return row;
-      }));
-    }
-    banks.forEach((bk, i) => {
-      const row = box.children[i], n = row.firstChild;
-      if (MB.counts[bk.name] !== undefined && MB.counts[bk.name] !== cnt(bk)) { row.classList.remove('pulse'); void row.offsetWidth; row.classList.add('pulse'); }
-      MB.counts[bk.name] = cnt(bk); n.textContent = String(cnt(bk));
-      row.title = (bk.description || '') + (own ? `  ${bk.run_count} of this run, ${bk.count} in all runs.` : '');
-    });
-    MB.banks = banks;
-    const sig = JSON.stringify(notes.map((x) => [x._id, x.version]));
-    if (sig !== MB.sig) {
-      MB.sig = sig;
-      const nb = $('#memNotes');
-      $('#memNotesInfo').textContent = notes.length ? `${notes.length} document${notes.length === 1 ? '' : 's'} in db.notes` : '';
-      nb.replaceChildren();
-      if (!notes.length) nb.append(el('div', 'none', S.runId ? 'Nothing written yet. Prose the agent saves under notes/ appears here as a MongoDB document, and is updated or deleted with the file.' : 'No run selected.'));
-      for (const x of notes) {
-        const d = el('div', 'mnote'), h = el('div', 'mh');
-        h.append(el('b', null, x.path), el('span', null, 'v' + x.version));
-        d.append(h, el('pre', null, x.text || ''));
-        d.onclick = () => { setTab('memory'); if (window.MemoryTab) { MemoryTab.open('notes'); MemoryTab.setRun(S.runId); } };
-        nb.append(d);
-      }
-    }
-  } catch (e) { /* the next poll retries */ } finally { MB.busy = false; }
 }
 
 /* ---------- feed ---------- */
@@ -619,36 +606,29 @@ function renderEvent(e) {
       break;
     }
     case 'harness': {
-      const gk = Number.isInteger(e.k) ? e.k : null, ids = e.lessons || [];
       label = 'HARNESS · ' + (e.what || 'event');
       body.textContent = e.text || '';
-      if (e.what === 'memory_nudge') {  // the harness told the agent to search its memory before acting on a new level
+      if (e.what === 'memory_nudge') {  // what the harness tells the agent at a level boundary
         d.classList.add('nudge');
-        label = 'HARNESS → AGENT · SEARCH YOUR MEMORY';
-        if (!e.text) body.textContent = 'Search your memory before the first action of this level.';
-      } else if (e.what === 'generation_created') {
-        label = 'HARNESS · NEW GENERATION' + (gk == null ? '' : ' · GEN ' + gk);
-        if (ids.length) body.append(el('div', 'ids', ids.map((x) => '+' + x).join('  ')));
-      } else if (e.what === 'lessons_injected') {
-        label = 'HARNESS · LESSONS INJECTED' + (gk == null ? '' : ' · GEN ' + gk);
-        const items = e.items || [];
-        if (items.length) {
-          const changed = e.changed || [];  // the event's text repeats the lessons; the list below is the readable form
-          body.textContent = changed.length ? `changed at this level: ${changed.join(', ')}` : '';
-          const list = el('div', 'inj');
-          for (const it of items) { const row = el('div'); row.append(el('span', 'id', it.id || ''), el('span', 'kind', it.kind || 'lesson'), it.text || ''); list.append(row); }
-          body.append(list);
-        } else if (ids.length) body.append(el('div', 'ids', ids.join('  ')));
-      } else if (ids.length) body.append(el('div', 'ids', ids.join('  ')));
+        label = 'HARNESS → AGENT · LEVEL CLEARED';
+      } else if ((e.lessons || []).length) body.append(el('div', 'ids', e.lessons.join('  ')));  // a run recorded under the earlier design
       break;
     }
-    case 'recall': {  // the agent searched this run's memory: its notes, its rule book, its level lessons
-      d.classList.add('mem');
-      label = 'MEMORY RECALL';
-      if (e.query) body.append(el('div', 'q', e.query));
-      if (e.text) body.append(el('div', null, e.text));
+    case 'recall': {  // the agent asked its memory a plain-language question (memory.py recall)
+      d.classList.add('mem', 'recall');
+      label = 'MEMORY · SEARCH';
       const ids = [...(e.lessons || []), ...(e.notes || [])];
-      if (ids.length) body.append(el('div', 'ids', ids.join('  ')));
+      if (e.query) body.append(el('div', 'q', e.query));
+      body.append(el('div', 'ids', `${ids.length} note${ids.length === 1 ? '' : 's'} returned` + (ids.length ? ':  ' + ids.map(noteShort).join('  ') : '')
+        + (e.engine === 'atlas_vector_search' ? '  ·  via Atlas Vector Search' : '')));
+      break;
+    }
+    case 'memory_write': {  // the agent saved, corrected or deleted a note in this run's memory (memory.py)
+      d.classList.add('mem');
+      label = 'MEMORY · ' + (MEM_OPS[e.op] || 'WRITE');
+      const head = [e.note ? noteShort(e.note) : '', e.title || ''].filter(Boolean).join('  ');
+      if (head) body.append(el('div', 'ids', head));
+      if (e.text) body.append(el('div', e.op === 'delete' ? 'gone' : null, e.text));
       break;
     }
     case 'system': label = 'SYSTEM · ' + (e.subtype || ''); body.textContent = e.text || ''; break;
@@ -667,6 +647,20 @@ function renderEvent(e) {
   if (placed && Number.isInteger(e.level)) meta.append(el('span', null, 'L' + e.level));
   d.append(meta, body);
   return d;
+}
+let recallTimer = null;
+function recallBanner(e) {  // the agent just asked its memory a question: say so where the audience is looking
+  const wrap = $('#boardWrap');
+  if (!wrap || !e) return;
+  let b = $('#recallBanner');
+  if (!b) { b = el('div', 'recallbanner'); b.id = 'recallBanner'; wrap.append(b); }
+  const n = (e.notes || []).length;
+  b.replaceChildren(el('div', 'rb-h', 'AGENT IS SEARCHING ITS MEMORY'), el('div', 'rb-q', e.query ? '\u201c' + e.query + '\u201d' : '(no question)'),
+    el('div', 'rb-r', `${n} note${n === 1 ? '' : 's'} returned` + (n ? ':  ' + e.notes.map(noteShort).join('  ') : '')
+      + (e.engine === 'atlas_vector_search' ? '   ·   MongoDB Atlas Vector Search' : '')));
+  b.classList.remove('on'); void b.offsetWidth; b.classList.add('on');
+  clearTimeout(recallTimer); recallTimer = setTimeout(() => b.classList.remove('on'), 5200);
+  const panel = document.querySelector('.membanks'); if (panel) { panel.classList.remove('recallpulse'); void panel.offsetWidth; panel.classList.add('recallpulse'); }
 }
 function syncFeed() {
   const feed = $('#feed'), box = $('#feedIn'), ev = S.events;
@@ -689,7 +683,11 @@ function syncFeed() {
   }
   // A reader who has scrolled up keeps their place: note where the last entry sits, and put it back after appending.
   const ref = S.feedPinned ? null : box.lastElementChild, y0 = ref ? ref.getBoundingClientRect().top : 0;
+  const fresh = end - S.feedEnd;
   for (let i = S.feedEnd; i < end; i++) box.append(renderEvent(ev[i]));
+  if (fresh > 0 && fresh <= 40) {  // stepping forward, not a jump: announce the newest memory search that just appeared
+    for (let i = end - 1; i >= end - fresh; i--) if (ev[i].kind === 'recall' && ev[i].op !== 'list') { recallBanner(ev[i]); break; }
+  }
   S.feedEnd = end;
   while (box.childElementCount > 400) { box.firstChild.remove(); S.feedStart++; }
   if (ref && ref.isConnected) feed.scrollTop += ref.getBoundingClientRect().top - y0;
@@ -712,7 +710,7 @@ function onFeedScroll() {
   feedTop = top;
 }
 
-/* ---------- tab 2: how the harness changed inside ONE game (the run in the RUN picker) ---------- */
+/* ---------- tab 2, LEVELS: what the run in the RUN picker spent on each level and what it wrote to memory ---------- */
 function runLink(id, text) {
   const a = el('a', 'run', text || id);
   a.title = 'Replay ' + id;
@@ -727,145 +725,117 @@ function openRun(id) {
 const ratioX = (v) => (typeof v === 'number' && isFinite(v) ? v.toFixed(2) + 'x' : '-');
 const isControl = (r) => !!r && (r.role === 'control' || r.memory_tool === false);
 function evoRun() { return S.run && S.run._id === S.runId ? S.run : S.runs.find((x) => x._id === S.runId) || null; }
-// One row per level of a run: what the harness recorded when the level was cleared (generations), else the
-// run's metrics, else the collector's live counters. ratio = actions spent / human baseline; lower is better.
-function levelRows(r, gens) {
+// One row per level of a run, from the run's metrics, else the collector's live counters.
+// ratio = actions spent / human baseline; lower is better.
+function levelRows(r) {
   if (!r) return [];
   const base = r.baseline_actions || [], m = r.metrics || {}, ml = m.levels || [], costs = r.level_costs || [];
-  const rec = new Map();
-  for (const g of gens || []) for (const x of [g.level_metrics, g.played]) if (x && Number.isInteger(x.level)) rec.set(x.level, x);
   const cur = Number.isInteger(r.level) ? r.level : m.levels_cleared || 0;
   const N = Math.max(r.win_levels || 0, m.win_levels || 0, base.length, ml.length);
   const rows = [];
   for (let i = 0; i < N; i++) {
-    const x = ml.find((v) => v.level === i), g = rec.get(i);
+    const x = ml.find((v) => v.level === i);
     const cleared = i < cur || !!(x && x.cleared);
-    const actions = cleared ? (g && g.actions) || (x && x.actions) || costs[i] || 0 : costs[i] || (x && x.actions) || 0;
-    const baseline = (g && g.baseline) || (x && x.baseline) || base[i] || null;
+    const actions = cleared ? (x && x.actions) || costs[i] || 0 : costs[i] || (x && x.actions) || 0;
+    const baseline = (x && x.baseline) || base[i] || null;
     rows.push({ level: i, actions, baseline, cleared, playing: !cleared && i === cur && r.status === 'running',
       ratio: actions && baseline ? actions / baseline : null });
   }
   return rows;
 }
-// The reference for a run with per-level memory: the most recent finished control run of the same game.
+// The reference for a run with memory: the most recent finished control run of the same game.
 function controlFor(r) {
   if (!r || isControl(r)) return null;
   return S.runs.find((x) => x._id !== r._id && x.role === 'control' && x.game_id === r.game_id && x.status !== 'running') || null;
 }
-// Did the agent ever retrieve from its memory, and when? Recall events are written by the memory gateway on
-// every search; memory_nudge events by the harness each time it tells the agent to search at a new level.
+// What the agent did with its memory, level by level. The memory gateway writes a memory_write event for every
+// save, update and delete and a recall event for every search; the harness writes a memory_nudge event each
+// time it prompts the agent at a level boundary.
 function memoryUse() {
-  const by = new Map(), at = (lv) => { if (!by.has(lv)) by.set(lv, { searches: [], nudges: 0 }); return by.get(lv); };
+  const by = new Map(), ops = { save: 0, update: 0, delete: 0 };
+  const at = (lv) => { if (!by.has(lv)) by.set(lv, { searches: [], writes: [], nudges: 0, ops: { save: 0, update: 0, delete: 0 } }); return by.get(lv); };
   let searches = 0, nudges = 0;
-  for (const e of S.evoEvents) {
-    const lv = Number.isInteger(e.level) ? e.level : 0;
-    if (e.kind === 'recall') { at(lv).searches.push(e); searches++; }
-    else if (e.kind === 'harness' && e.what === 'memory_nudge') { at(lv).nudges++; nudges++; }
+  for (const e of S.evoFor === S.runId ? S.evoEvents : []) {
+    const u = at(Number.isInteger(e.level) ? e.level : 0);
+    if (e.kind === 'recall') { u.searches.push(e); searches++; }
+    else if (e.kind === 'memory_write') { u.writes.push(e); if (e.op in ops) { ops[e.op]++; u.ops[e.op]++; } }
+    else if (e.kind === 'harness' && e.what === 'memory_nudge') { u.nudges++; nudges++; }
   }
-  return { by, searches, nudges, levels: [...by.values()].filter((v) => v.searches.length).length };
+  return { by, ops, searches, nudges, writes: ops.save + ops.update + ops.delete,
+    levels: [...by.values()].filter((v) => v.searches.length).length };
 }
 function markEvolution() {
   const r = evoRun(), c = controlFor(r);
-  const live = (x) => x && [x._id, x.status, x.role, x.level, x.gen_k, x.level_costs, x.metrics && x.metrics.levels];
-  const sig = JSON.stringify([S.runId, S.evoFor, S.gens, S.lessons, S.evoEvents.map((e) => e.seq), S.evoPartial, live(r), live(c)]);
+  const live = (x) => x && [x._id, x.status, x.role, x.level, x.level_costs, x.metrics && x.metrics.levels];
+  const sig = JSON.stringify([S.runId, S.evoFor, S.notes.map((x) => [x._id, x.version]), S.evoEvents.map((e) => e.seq), S.evoPartial, live(r), live(c)]);
   if (sig === S.evoSig) return;
   S.evoSig = sig; S.evoDirty = true;
-  if (S.tab === 'evolution') renderEvolution();
+  if (S.tab === 'levels') renderEvolution();
 }
 function renderEvolution() {
   S.evoDirty = false;
-  const r = evoRun(), rows = levelRows(r, S.gens), use = memoryUse();
+  const r = evoRun(), rows = levelRows(r), use = memoryUse();
   const scope = $('#evoScope');
   scope.replaceChildren();
   if (r) {
     scope.append(el('b', null, r.game_id || r._id), el('span', 'rid', r._id), el('span', 'chip ' + (r.status || ''), r.status || ''));
     if (isControl(r)) scope.append(el('span', 'chip ctl', 'CONTROL'));
   } else scope.append(el('span', 'rid', S.runs.length ? 'No run selected: pick one in the RUN picker.' : 'No runs yet.'));
-  renderTiles(r, rows, use); renderGens(r, rows); renderChart(r, rows, use); renderLessons(r);
+  renderTiles(r, rows, use); renderActivity(r, rows, use); renderChart(r, rows, use); renderNotes(r);
 }
 function renderTiles(r, rows, use) {
-  const box = $('#tiles'), active = S.gens.find((g) => g.status === 'active') || S.gens[S.gens.length - 1];
+  const box = $('#tiles'), ctl = isControl(r), mine = S.evoFor === S.runId;
   const tile = (num, lbl, cls) => { const t = el('div', 'tile'), n = el('div', 'num' + (cls ? ' ' + cls : '')); n.append(...[].concat(num)); t.append(n, el('div', 'lbl', lbl)); return t; };
-  const live = S.lessons.filter((l) => l.status === 'active').length, ctl = isControl(r);
   const done = rows.filter((x) => x.cleared), scored = done.filter((x) => x.ratio != null);
-  box.replaceChildren(
-    tile(active && Number.isInteger(active.k) ? 'GEN ' + active.k : '-', ctl ? 'GENERATION: A CONTROL RUN STAYS ON 0' : 'ACTIVE GENERATION OF THIS RUN'),
-    tile(String(live), `ACTIVE LESSONS, ${S.lessons.length - live} RETIRED`),
-    tile([String(done.length), el('small', null, rows.length ? ` of ${rows.length}` : '')], 'LEVELS CLEARED'));
+  box.replaceChildren(tile([String(done.length), el('small', null, rows.length ? ` of ${rows.length}` : '')], 'LEVELS CLEARED'));
+  if (ctl) {
+    box.append(tile('none', 'NOTES IN MEMORY: A CONTROL RUN HAS NO MEMORY', 's2'), tile('none', 'MEMORY WRITES', 's2'), tile('none', 'MEMORY SEARCHES', 's2'));
+  } else {
+    box.append(tile(r && mine ? String(runNotes().length) : '-', 'NOTES IN MEMORY NOW'),
+      tile(r && mine ? String(use.writes) : '-', `MEMORY WRITES: ${use.ops.save} SAVED · ${use.ops.update} UPDATED · ${use.ops.delete} DELETED`),
+      tile(r && mine ? el('span', use.searches ? '' : 'down', String(use.searches)) : '-',
+        `MEMORY SEARCHES, ON ${use.levels} OF ${rows.length || '?'} LEVELS` + (S.evoPartial ? ' · FIRST 2000 EVENTS ONLY' : '')));
+  }
   if (scored.length >= 2) {  // like for like inside one game: the first cleared level against the most recent one
     const a = scored[0], b = scored[scored.length - 1];
     box.append(tile([el('small', null, `L${a.level} ${ratioX(a.ratio)} → `), el('span', b.ratio <= a.ratio ? 'up' : 'down', `L${b.level} ${ratioX(b.ratio)}`)],
-      'ACTIONS PER LEVEL, OF HUMAN BASELINE: FIRST → LATEST CLEARED', 's2'));
-  } else box.append(tile(scored.length ? `L${scored[0].level} ${ratioX(scored[0].ratio)}` : '-', 'ACTIONS PER LEVEL, OF HUMAN BASELINE', 's2'));
-  if (ctl) box.append(tile('none', 'MEMORY SEARCHES: NO MEMORY TOOL IN A CONTROL RUN', 's2'));
-  else {
-    const n = el('span', use.searches ? '' : 'down', String(use.searches));
-    box.append(tile([n, el('small', null, ` at ${use.levels} of ${rows.length || '?'} levels`)],
-      `MEMORY SEARCHES BY THE AGENT · ${use.nudges} HARNESS NUDGE${use.nudges === 1 ? '' : 'S'}` + (S.evoPartial ? ' · FIRST 2000 EVENTS ONLY' : '')));
+      'ACTIONS OVER HUMAN BASELINE: FIRST → LATEST CLEARED LEVEL', 's2'));
+  } else box.append(tile(scored.length ? `L${scored[0].level} ${ratioX(scored[0].ratio)}` : '-', 'ACTIONS OVER HUMAN BASELINE', 's2'));
+}
+function activityRow(e) {
+  const d = el('div', 'mact ' + (e.kind === 'recall' ? 'search' : e.op || '')), h = el('div', 'h');
+  if (e.kind === 'recall') {
+    const ids = [...(e.lessons || []), ...(e.notes || [])];
+    h.append(el('b', null, 'SEARCHED'), el('span', 't', e.query || ''));
+    d.append(h, el('div', 'r', `${ids.length} note${ids.length === 1 ? '' : 's'} came back` + (ids.length ? ':  ' + ids.map(noteShort).join('  ') : '')
+      + (e.engine === 'atlas_vector_search' ? '  ·  Atlas Vector Search' : '')));
+  } else {
+    h.append(el('b', null, MEM_OPS[e.op] || 'WROTE'), el('span', 'id', e.note ? noteShort(e.note) : ''), el('span', 't', e.title || ''));
+    d.append(h);
+    if (e.text) d.append(el('div', 'x', e.text));
   }
+  return d;
 }
-function idSpans(ids, cls, sign) {
-  return (ids || []).map((id) => {
-    const s = el('span', cls, sign + id), l = S.lessons.find((x) => x._id === id);
-    if (l) s.title = l.text;
-    return s;
-  });
-}
-function renderGens(r, rows) {
-  const box = $('#genList');
+function renderActivity(r, rows, use) {
+  const box = $('#actList');
   box.replaceChildren();
   if (!r) return void box.append(el('div', 'none', 'No run selected.'));
-  if (S.evoFor !== S.runId) return void box.append(el('div', 'none', 'Loading the generations of this run.'));
   if (isControl(r)) {
-    box.append(el('div', 'evonote ctl', 'Control run: launched with --no-memory. It has no memory tool, learns no level lessons and stays on generation 0, so nothing evolves here. It is the reference that runs with per-level memory are compared against.'));
+    return void box.append(el('div', 'evonote ctl', 'Control run: launched with --no-memory. It has no memory, so it writes nothing down and searches nothing. It is the reference that a run with memory is compared against.'));
   }
-  if (!S.gens.length) {
-    const old = r.generation != null && !Number.isInteger(r.gen_k);
-    return void box.append(el('div', 'evonote', 'No per-level generations recorded for this run.'
-      + (old ? ' It was recorded under the earlier design, where a generation belonged to a whole game; that record is not drawn here.'
-        : isControl(r) ? '' : ' Generation 0 is written at launch, and a new generation each time a level is cleared.')));
+  if (S.evoFor !== S.runId) return void box.append(el('div', 'none', 'Loading the memory activity of this run.'));
+  const levels = [...use.by.keys()].filter((lv) => use.by.get(lv).writes.length || use.by.get(lv).searches.length).sort((a, b) => b - a);
+  if (!levels.length) {
+    return void box.append(el('div', 'evonote', 'No memory activity recorded for this run. Every note the agent saves, corrects or deletes with memory.py, and every search it makes, is listed here.'));
   }
-  for (const g of [...S.gens].sort((a, b) => (b.k || 0) - (a.k || 0))) {
-    const c = el('div', 'gcard ' + (g.status || '')), hd = el('div', 'hd'), diff = g.diff || {}, lm = g.level_metrics, pl = g.played;
-    c.style.setProperty('--gc', genColor(g.k));
-    hd.append(el('span', 'g', 'GEN ' + (Number.isInteger(g.k) ? g.k : '?')), el('span', 'chip ' + (g.status || ''), g.status || '?'),
-      el('span', 'when', Number.isInteger(g.level) ? 'after level ' + g.level : 'at launch'));
-    const from = el('div', 'played from');
-    if (lm) {  // the level whose clearing produced this generation
-      const x = lm.baseline ? lm.actions / lm.baseline : null;
-      from.append(el('span', 'k', 'DISTILLED FROM'), `level ${lm.level}: ${lm.actions} actions / baseline ${lm.baseline == null ? '?' : lm.baseline}`,
-        el('small', null, 'efficiency ' + fmt(lm.efficiency)), el('b', x == null ? '' : x <= 1 ? 'good' : x <= 2 ? 'over' : 'bad', x == null ? '' : ratioX(x)));
-    }
-    const sub = el('div', 'sub'), ds = g.distiller || {};
-    sub.append(`${(g.lessons || []).length} lesson${(g.lessons || []).length === 1 ? '' : 's'} active`);
-    if (ds.kind && ds.kind !== 'none') sub.append(` · distilled by ${ds.kind}${ds.model && ds.model !== 'none' ? ' (' + ds.model + ')' : ''}${typeof ds.cost_usd === 'number' && ds.cost_usd ? ', $' + ds.cost_usd.toFixed(3) : ''}`);
-    const d = el('div', 'diff');
-    const line = (k, nodes) => { if (nodes.length) { const row = el('div'), v = el('span', 'vals'); v.append(...nodes); row.append(el('span', 'k', k), v); d.append(row); } };
-    line('ADDED', idSpans(diff.added_lessons, 'add', '+'));
-    line('REVISED', idSpans(diff.revised_lessons, 'rev', '~'));
-    line('RETIRED', idSpans(diff.retired_lessons, 'del', '-'));
-    line('KNOBS', Object.entries(diff.knob_changes || {}).map(([k, v]) => el('span', 'knob', `${k} ${Array.isArray(v) ? v[0] + ' → ' + v[1] : v}`)));
-    if (!d.childElementCount) line('DIFF', [el('span', null, g.k ? 'no change to lessons or knobs' : 'none: the harness as launched, with empty memory')]);
-    c.append(hd, sub);
-    if (lm) c.append(from);
-    c.append(d);
-    if (g.rationale) c.append(el('p', null, g.rationale));
-    // How the level played UNDER this generation went: level k.
-    const p = el('div', 'played'), row = rows[g.k];
-    if (pl) {
-      const x = pl.baseline ? pl.actions / pl.baseline : null;
-      p.append(el('span', 'k', 'PLAYED UNDER IT'), `level ${pl.level}: ${pl.actions} actions / baseline ${pl.baseline == null ? '?' : pl.baseline}`,
-        el('b', x == null ? '' : x <= 1 ? 'good' : x <= 2 ? 'over' : 'bad', x == null ? '' : ratioX(x)));
-    } else if (row && row.playing) p.append(el('span', 'k', 'PLAYED UNDER IT'), `level ${row.level}: in play, ${row.actions} actions so far` + (row.baseline ? ` / baseline ${row.baseline}` : ''));
-    else if (row && !row.cleared && r.status !== 'running') p.append(el('span', 'k', 'PLAYED UNDER IT'), `level ${row.level}: not cleared` + (row.actions ? ` after ${row.actions} actions` : ''));
-    else if (!row && Number.isInteger(g.k) && rows.length && g.k >= rows.length) p.append(el('span', 'k', 'PLAYED UNDER IT'), 'nothing: the game was over, no level is left');
-    if (p.childElementCount) c.append(p);
-    if (g.addendum) {  // the lessons section of the workspace CLAUDE.md under this generation
-      const det = el('details', 'add'), n = g.addendum.split('\n').length;
-      det.append(el('summary', null, `LESSONS SECTION OF CLAUDE.md, ${n} LINE${n === 1 ? '' : 'S'}`), el('pre', null, g.addendum));
-      c.append(det);
-    }
-    box.append(c);
+  for (const lv of levels) {
+    const u = use.by.get(lv), row = rows[lv], g = el('div', 'mgroup'), hd = el('div', 'mghd');
+    hd.append(el('b', null, 'LEVEL ' + lv), el('span', null, !row ? '' : (row.cleared ? `cleared in ${row.actions} actions` : row.playing ? `in play, ${row.actions} actions so far`
+      : row.actions ? `not cleared after ${row.actions} actions` : 'not played') + (row.baseline ? ` / human baseline ${row.baseline}` : '')));
+    if (row && row.cleared && row.ratio != null) hd.append(el('i', row.ratio <= 1 ? 'good' : row.ratio <= 2 ? 'over' : 'bad', ratioX(row.ratio)));
+    g.append(hd);
+    for (const e of [...u.writes, ...u.searches].sort((a, b) => b.seq - a.seq)) g.append(activityRow(e));
+    box.append(g);
   }
 }
 const NS = 'http://www.w3.org/2000/svg';
@@ -881,23 +851,17 @@ function renderChart(r, rows, use) {
   if (!r) return void box.append(el('div', 'none', S.runs.length ? 'No run selected.' : 'No runs yet.'));
   if (!rows.length) return void box.append(el('div', 'none', 'No level data recorded for this run yet.'));
   if (W < 50 || H < 50) { S.evoDirty = true; return; }
-  const ctl = controlFor(r), crow = ctl ? levelRows(ctl, []) : [], self = isControl(r);
-  const perLevel = !self && S.gens.length > 0;  // level i was played under generation i of this run
-  const tone = (i) => (perLevel ? genColor(i) : '#b3bdca');
+  const ctl = controlFor(r), crow = ctl ? levelRows(ctl) : [], self = isControl(r), col = RUN_COLOR;
   const item = (cls, style, text) => { const s = el('span'), i = el('i', cls); if (style) i.style.background = style; s.append(i, text); return s; };
-  leg.append(self ? item('ring', null, 'this run (control, no memory)') : item('dot', '#b3bdca', 'this run (per-level memory)'));
+  leg.append(self ? item('ring', null, 'this run (control, no memory)') : item('dot', col, 'this run (with memory)'));
   if (ctl) { const s = item('ring', null, 'control (no memory) '); s.append(runLink(ctl._id)); leg.append(s); }
   else if (!self) leg.append(el('span', 'mute', 'no finished control run of this game in the database'));
-  if (perLevel) {
-    const ks = rows.filter((x) => x.cleared || x.playing).map((x) => x.level);
-    if (ks.length) { const s = el('span', 'gk'); s.append('played under', ...ks.map((k) => item('dot', genColor(k), 'GEN ' + k))); leg.append(s); }
-  }
   // A level a finished run never cleared is an X at the top; a level a running game has not reached yet is left empty.
   const failed = (v, run) => !v.cleared && !v.playing && run.status !== 'running';
   if (rows.some((v) => failed(v, r))) leg.append(item('x' + (self ? ' c' : ''), null, self ? 'level not cleared' : 'this run: level not cleared'));
   if (ctl && crow.slice(0, rows.length).some((v) => failed(v, ctl))) leg.append(item('x c', null, 'control: level not cleared'));
-  if (!self) leg.append(el('span', 'mute', 'RECALLS: memory searches the agent made on that level; nudged = the harness told it to search'));
-  const L = 78, R = 16, T = 16, B = 60, pw = W - L - R, ph = H - T - B, N = rows.length, slot = pw / N;
+  if (!self) leg.append(el('span', 'mute', 'SAVED: notes written while on that level · RECALLS: memory searches made there; nudged = after a harness prompt'));
+  const L = 78, R = 16, T = 16, B = 76, pw = W - L - R, ph = H - T - B, N = rows.length, slot = pw / N;
   let top = 1.5;
   for (const x of [...rows, ...crow]) if (x.ratio != null && (x.cleared || x.playing)) top = Math.max(top, x.ratio * 1.14);
   top = Math.ceil(top * 2) / 2;
@@ -912,18 +876,16 @@ function renderChart(r, rows, use) {
     svg('text', { x: L + pw - 4, y: y(1) - 6, 'text-anchor': 'end', class: 't' }, 'human baseline'));
   const pts = (list) => list.filter((v) => v.cleared && v.ratio != null).map((v) => `${x(v.level)},${y(v.ratio)}`).join(' ');
   if (crow.length) s.append(svg('polyline', { points: pts(crow.slice(0, N)), fill: 'none', stroke: '#8a94a3', 'stroke-width': 1.5, 'stroke-dasharray': '5 4' }));
-  s.append(svg('polyline', { points: pts(rows), fill: 'none', stroke: '#8a94a3', 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-dasharray': self ? '5 4' : 'none' }));
-  const cross = (cx, cy, col, w) => { for (const d of [1, -1]) s.append(svg('line', { x1: cx - 5, x2: cx + 5, y1: cy - 5 * d, y2: cy + 5 * d, stroke: col, 'stroke-width': w, 'stroke-linecap': 'round' })); };
+  s.append(svg('polyline', { points: pts(rows), fill: 'none', stroke: self ? '#8a94a3' : col, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-dasharray': self ? '5 4' : 'none', opacity: self ? 1 : 0.55 }));
+  const cross = (cx, cy, c, w) => { for (const d of [1, -1]) s.append(svg('line', { x1: cx - 5, x2: cx + 5, y1: cy - 5 * d, y2: cy + 5 * d, stroke: c, 'stroke-width': w, 'stroke-linecap': 'round' })); };
   for (const v of crow.slice(0, N)) {  // the control run, drawn first so this run's points sit on top
     if (v.cleared && v.ratio != null) s.append(svg('circle', { cx: x(v.level), cy: y(v.ratio), r: 5.5, fill: '#0e1218', stroke: '#b3bdca', 'stroke-width': 2.5 }));
     else if (failed(v, ctl)) cross(x(v.level) + (rows[v.level] && failed(rows[v.level], r) ? 13 : 0), T + 9, '#b3bdca', 2);
   }
-  const rowY = [T + ph + 20, T + ph + 36, T + ph + 52];
-  s.append(svg('text', { x: L - 8, y: rowY[0], 'text-anchor': 'end', class: 't' }, 'LEVEL'),
-    svg('text', { x: L - 8, y: rowY[1], 'text-anchor': 'end', class: 't' }, 'ACTIONS'),
-    svg('text', { x: L - 8, y: rowY[2], 'text-anchor': 'end', class: 't' }, 'RECALLS'));
+  const rowY = [T + ph + 20, T + ph + 36, T + ph + 52, T + ph + 68];
+  ['LEVEL', 'ACTIONS', 'SAVED', 'RECALLS'].forEach((name, k) => s.append(svg('text', { x: L - 8, y: rowY[k], 'text-anchor': 'end', class: 't' }, name)));
   rows.forEach((v, i) => {
-    const cx = x(i), col = tone(v.level), u = use.by.get(i) || { searches: [], nudges: 0 }, c = crow[i];
+    const cx = x(i), u = use.by.get(i) || { searches: [], writes: [], nudges: 0, ops: { save: 0, update: 0, delete: 0 } }, c = crow[i];
     if (v.cleared && v.ratio != null) {
       const cy = y(v.ratio);
       if (self) s.append(svg('circle', { cx, cy, r: 5.5, fill: '#0e1218', stroke: '#b3bdca', 'stroke-width': 2.5 }));
@@ -939,14 +901,17 @@ function renderChart(r, rows, use) {
     s.append(svg('text', { x: cx, y: rowY[0], 'text-anchor': 'middle', class: 't' }, 'L' + i),
       svg('text', { x: cx, y: rowY[1], 'text-anchor': 'middle' }, v.actions || v.cleared ? `${v.actions} / ${v.baseline == null ? '?' : v.baseline}` : '-'));
     const reached = v.cleared || v.playing || v.actions > 0;
-    const st = self ? 'no tool' : !reached ? '-' : String(u.searches.length) + (u.nudges ? ' (nudged)' : '');
-    s.append(svg('text', { x: cx, y: rowY[2], 'text-anchor': 'middle', class: self || !reached ? '' : u.searches.length ? 'ok' : 'z' }, st));
+    const saved = [[u.ops.save, 'new'], [u.ops.update, 'upd'], [u.ops.delete, 'del']].filter((p) => p[0]).map((p) => p[0] + ' ' + p[1]).join(' ');
+    s.append(svg('text', { x: cx, y: rowY[2], 'text-anchor': 'middle', class: self || !reached ? '' : saved ? 'w' : v.cleared ? 'z' : '' }, self ? 'no memory' : !reached ? '-' : saved || '0'));
+    const st = self ? 'no memory' : !reached ? '-' : String(u.searches.length) + (u.nudges ? ' (nudged)' : '');
+    s.append(svg('text', { x: cx, y: rowY[3], 'text-anchor': 'middle', class: self || !reached || (!i && !u.searches.length) ? '' : u.searches.length ? 'ok' : 'z' }, st));  // level 0 starts with an empty memory: nothing to search
     const hit = svg('rect', { x: L + i * slot, y: T, width: slot, height: ph + B, class: 'hit' });
-    hit.addEventListener('mousemove', (e) => showTip(e, `level ${i}` + (self ? ' · control run, generation 0' : perLevel ? ` · played under GEN ${i}` : '') + '\n'
+    hit.addEventListener('mousemove', (e) => showTip(e, `level ${i}` + (self ? ' · control run, no memory' : '') + '\n'
       + (v.cleared ? `${v.actions} actions / human baseline ${v.baseline == null ? '?' : v.baseline} = ${ratioX(v.ratio)}`
         : v.playing ? `in play: ${v.actions} actions so far` + (v.baseline ? ` / human baseline ${v.baseline}` : '')
         : v.actions ? `not cleared after ${v.actions} actions` : r.status === 'running' ? 'not reached yet' : 'not reached')
-      + (self ? '' : `\nmemory searches by the agent on this level: ${u.searches.length}` + (u.nudges ? `, after ${u.nudges} harness nudge${u.nudges === 1 ? '' : 's'}` : ', no harness nudge recorded')
+      + (self ? '' : `\nnotes written on this level: ${u.ops.save} saved, ${u.ops.update} updated, ${u.ops.delete} deleted`
+        + `\nmemory searches on this level: ${u.searches.length}` + (u.nudges ? ', after a harness prompt' : '')
         + u.searches.map((q) => `\n  "${String(q.query || '').slice(0, 44)}"`).join(''))
       + (c ? `\ncontrol (no memory): ` + (c.cleared ? `${c.actions} actions = ${ratioX(c.ratio)}` : c.actions ? `not cleared after ${c.actions} actions` : 'not reached') : '')));
     hit.addEventListener('mouseleave', hideTip);
@@ -962,32 +927,27 @@ function showTip(e, text) {
   t.style.top = Math.max(8, e.clientY - t.offsetHeight - 10) + 'px';
 }
 function hideTip() { $('#tip').hidden = true; }
-function renderLessons(r) {
-  const box = $('#lessons');
+function renderNotes(r) {
+  const box = $('#noteTable'), order = (x) => +(/mem\/(\d+)$/.exec(String(x._id)) || [0, 0])[1];
+  const notes = runNotes().sort((a, b) => order(a) - order(b));
   box.replaceChildren();
-  $('#lessonInfo').textContent = S.lessons.length ? 'what each cleared level taught, used on the later levels of this game only' : '';
-  if (!S.lessons.length) {
+  $('#noteInfo').textContent = notes.length ? `${notes.length} document${notes.length === 1 ? '' : 's'} in db.notes · Atlas embeds each note and answers the agent's plain-language searches` : '';
+  if (!notes.length) {
     return void box.append(el('div', 'none', !r ? 'No run selected.'
-      : isControl(r) ? 'None: a control run has no memory and learns no level lessons.'
-      : 'No lessons recorded for this run. The harness distils them each time a level is cleared, for the later levels of the same game.'));
+      : isControl(r) ? 'None: a control run has no memory.'
+      : S.evoFor !== S.runId ? 'Loading the notes of this run.'
+      : 'No notes in memory for this run. The agent writes them itself with memory.py; every run starts with an empty memory.'));
   }
-  const revised = new Map();
-  for (const g of S.gens) for (const id of (g.diff || {}).revised_lessons || []) revised.set(id, g.k);
   const t = el('table', 'lt'), hr = el('tr');
-  for (const [h, c] of [['ID'], ['LEARNED'], ['LESSON'], ['STATUS'], ['EVIDENCE  level / rule'], ['RECALLED', 'n']]) hr.append(el('th', c, h));
+  for (const [h, c] of [['ID'], ['TITLE'], ['SAVED ON'], ['VERSION'], ['NOTE'], ['SCRIPT REFS']]) hr.append(el('th', c, h));
   t.append(hr);
-  for (const l of S.lessons) {
-    const tr = el('tr', l.status === 'retired' ? 'retired' : ''), st = l.stats || {};
-    const txt = el('td', 'txt');
-    if (l.kind) txt.append(el('span', 'kind', l.kind));
-    txt.append(el('span', 'body', l.text || ''));
-    if (revised.has(l._id)) txt.append(el('span', 'why rev', 'revised in GEN ' + revised.get(l._id)));
-    if (l.retired_reason) txt.append(el('span', 'why', 'retired: ' + l.retired_reason));
-    const status = el('td'); status.append(el('span', 'chip ' + (l.status || ''), l.status || ''));
-    const evd = el('td', 'evd');
-    for (const e of l.evidence || []) evd.append(el('div', 'what', `${Number.isInteger(e.level) ? 'L' + e.level : ''}${e.rule ? ' / ' + e.rule : ''}`));
-    tr.append(el('td', 'id', l._id), el('td', 'm', Number.isInteger(l.level) ? 'after L' + l.level : '-'), txt, status, evd,
-      el('td', 'm n', st.recalled == null ? '-' : String(st.recalled)));
+  for (const x of notes) {
+    const tr = el('tr'), txt = el('td', 'txt'), refs = el('td', 'refs');
+    txt.append(el('span', 'body', x.text || ''));
+    for (const ref of x.refs || []) refs.append(el('span', null, ref));
+    if (!(x.refs || []).length) refs.textContent = '-';
+    tr.append(el('td', 'id', noteShort(x._id)), el('td', 'ttl', x.title || ''), el('td', 'm', Number.isInteger(x.level) ? 'level ' + x.level : '-'),
+      el('td', 'm', 'v' + (x.version || 1)), txt, refs);
     t.append(tr);
   }
   box.append(t);
@@ -997,14 +957,14 @@ function renderLessons(r) {
 function setTab(tab) {
   S.tab = tab;
   $('#tab-live').hidden = tab !== 'live';
-  $('#tab-evolution').hidden = tab !== 'evolution';
+  $('#tab-levels').hidden = tab !== 'levels';
   $('#tab-memory').hidden = tab !== 'memory';
   if (window.MemoryTab) MemoryTab.setActive(tab === 'memory');
-  $('#pickerWrap').hidden = tab === 'memory';  // the evolution tab is about the run in the picker
+  $('#pickerWrap').hidden = tab === 'memory';  // the LEVELS tab is about the run in the picker
   $('#modeSeg').hidden = tab !== 'live';
-  if (tab === 'evolution' && S.runId && S.evoFor !== S.runId) ensureEvolution(evoRun());
+  if (tab === 'levels' && S.runId && S.evoFor !== S.runId) ensureEvolution(evoRun());
   for (const b of $('#tabs').children) b.classList.toggle('on', b.dataset.tab === tab);
-  if (tab === 'evolution') renderEvolution();
+  if (tab === 'levels') renderEvolution();
   syncUrl();
 }
 function syncUrl() {
@@ -1061,7 +1021,7 @@ function bind() {
   $('#feed').addEventListener('scroll', onFeedScroll, { passive: true });
   if (document.fonts && document.fonts.addEventListener) document.fonts.addEventListener('loadingdone', pinFeed);  // web fonts change every line's height
   let rz = null;
-  addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => { pinFeed(); if (S.tab === 'evolution') renderEvolution(); }, 120); });
+  addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => { pinFeed(); if (S.tab === 'levels') renderEvolution(); }, 120); });
 }
 async function boot() {
   AC.mountOverlay($('#boardWrap')); AC.mountPad($('#ctlPad'), { layout: 'row' }); AC.mountTape($('#ctlTape'), { max: 12 });
@@ -1070,7 +1030,7 @@ async function boot() {
     if (S.tab === 'memory' && q.get('run') && !q.get('run_id')) MemoryTab.setRun(q.get('run'));
   }
   addEventListener('mongoarc:open-run', (e) => { if (e.detail && e.detail.run_id) openRun(e.detail.run_id); });
-  bind(); setTab(S.tab); renderMode(); renderHud(); renderHarness(); syncFeed(); syncRulebook();
+  bind(); $('#memPanel').onclick = openMemoryTab; setTab(S.tab); renderMode(); renderHud(); renderMemory(); syncFeed(); syncRulebook();
   for (;;) {  // the palette comes from db.PALETTE; nothing is drawn without it
     try { setPalette(await api('/api/palette')); setConn(true); break; } catch (e) { setConn(false); await sleep(1000); }
   }

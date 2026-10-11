@@ -1,58 +1,44 @@
 # MongoARC
 
-**A harness that rewrites itself between levels.** An agent (Claude Code) plays an [ARC-AGI-3](https://three.arcprize.org) game it has never seen. Everything it does is recorded in MongoDB Atlas. Each time it clears a level, the harness reads that record, distils what will matter on the levels still to come, and builds the next *generation* of itself: the lessons section of the agent's prompt, its launch settings, and what the agent's memory search returns.
+**A Claude Code agent that plays ARC-AGI-3 with its memory in MongoDB Atlas, and a live view of everything it does.** The agent plays a game it has never seen, level by level. What it learns on one level it writes into a vector database, in its own words, and searches by meaning before it acts on the next. The memory outlives the agent's context window, so what it worked out on level 1 is still there on level 8.
 
-Built for the Harness Engineering & Model Wrangling hackathon (SF Tech Week, 2026-10-11), problem statement 1, *Recursive Harnessing*.
+Built for the Harness Engineering & Model Wrangling hackathon (SF Tech Week, 2026-10-11).
 
-## Why per level, and not per game
+## Why memory is per game
 
-ARC-AGI-3 environments are designed to be novel: what an agent works out in one game is not supposed to carry into another. What it works out on one *level* does carry into the later levels of the same game, which reuse the mechanics over harder layouts. So the unit of self-improvement here is the level. Every game starts in a brand-new workspace with an empty memory and its own generation 0; nothing crosses from one game to the next.
+ARC-AGI-3 environments are designed to be novel: what an agent works out in one game is not supposed to carry into another. What it works out on one *level* does carry into the later levels of the same game, which reuse the mechanics over harder layouts. So every game starts in a brand-new workspace with an empty memory, and nothing crosses from one game to the next.
 
-## The loop
+## How it works
 
 ```
-   launch a game  →  generation 0 of this run: empty lessons, default settings
-                            │
+   ARC-AGI-3 game  ◄──►  Claude Code agent
+                            │  python3 memory.py save / update / delete / list
+                            │  python3 memory.py recall "<question>"
                             ▼
-   ARC-AGI-3 game  ◄──►  Claude Code agent  ──(memory.py recall)──►  memory gateway ─┐
-                            │ writes trace, reasoning, rule book, notes/              │
-                            ▼                                                        ▼
-                        collector  ───────────────►  MongoDB Atlas  ◄────────────────┘
-                                                     runs · actions · events · rulebooks · notes
-            level k cleared ┌───────────────────────────┘
+                     memory gateway (loopback; holds the database connection)
                             ▼
-      score the level (actions spent against the human baseline)
-                            ▼
-      distil (Claude reads this run's rule book, notes and per-level scores)
-                            ▼
-      generation k+1 of this run:  rewrite the lessons section of the agent's prompt,
-      send the change into the live session, tell the agent to search its memory
-                            │
-                            └──►  the agent plays level k+1 under generation k+1
+                     MongoDB Atlas ── notes ── Vector Search with automated embedding
+                            ▲
+   collector ───────────────┘  runs · actions · events        ◄── dashboard reads all of it
 ```
 
-What changes from one generation to the next:
+- **The agent writes its own lessons.** `memory.py save "<title>" "<text>"` stores a note; `update` corrects one in place and keeps the earlier wording; `delete` removes one that turned out wrong. Notes are plain prose.
+- **MongoDB does the retrieval.** `memory.py recall "<question>"` is an Atlas Vector Search with automated embedding: Atlas embeds each note when it is saved and embeds the question when it is asked, so the harness sends raw text and gets back the notes closest in meaning. A note that shares no words with the question is still found.
+- **The agent never holds database credentials.** `memory.py` is a small script in its workspace that calls a loopback gateway started for that run; the gateway holds the Atlas connection and restricts every call to that run.
+- **The harness prompts at level boundaries.** When a level is cleared it sends one message into the live session: save what that level taught you, then search your memory before acting on the new one.
+- **Only code is kept as files.** Scripts go in `scripts/`, throwaway images in `scratch/`; a note names the script it depends on.
 
-| Part of the harness | How it evolves |
-|---|---|
-| **Rules** | Lessons about this game, distilled from the rule book the agent commits at each level gate, with the evidence (level, rule) each came from. Lessons are retired or revised as later levels contradict them. |
-| **Context policy** | The lessons section of the workspace `CLAUDE.md` is rewritten in place at every level. Claude Code re-injects that file after a context compaction, so the distilled lessons survive it. A coach watches the action count on the current level and, when the agent is stuck, sends the most relevant of this run's lessons into the live session. |
-| **Guardrails** | Launch settings (action budget multiple, nudge count, the coach's stuck threshold) are part of the generation and can be changed by the distiller. |
-| **Memory** | The agent's `memory.py recall <words>` searches only this run: its own notes, the rules it verified, and the lessons from the levels it has cleared. At every level boundary the harness prompts the agent to search before it acts on the new level. Prose the agent writes under `notes/` is mirrored into MongoDB as it is written, edited or deleted; code under `scripts/` is never stored. |
-
-The hard metric is the per-level curve inside a game: actions spent on a level against that level's human baseline.
+The agent's instructions are the workspace `CLAUDE.md`: CCARC's two-line preamble followed by [`mongoarc/assets/ARC3_DOCTRINE.md`](mongoarc/assets/ARC3_DOCTRINE.md), which is CCARC's ARC-AGI-3 doctrine with its level-gate and local-file sections replaced by a Memory section. CCARC's level gate (which refuses the next action until the agent records a rule book in a local file) is switched off.
 
 ## How MongoDB Atlas is used
 
-MongoDB is the harness's memory of record; nothing about a run lives only on disk.
+MongoDB is the memory of record; nothing about a run lives only on disk.
 
+- `notes`: the agent's memory, one document per note, with version and revision history. An Atlas Vector Search index with automated embedding (`voyage-4`) and a filter on `run_id` serves the semantic search.
 - `actions`: every move with its 64x64 frames, so any game can be replayed frame by frame.
-- `events`: one ordered timeline per run of the agent's reasoning, code, tool results, rule-book changes, harness interventions and memory searches.
-- `rulebooks`: a snapshot each time the agent commits what it has verified or refuted.
-- `notes` (text-indexed): the agent's own prose, one document per file under `notes/`, updated in place when the file changes and deleted when the file is deleted.
-- `lessons` (text-indexed) and `generations`: the evolving harness itself, per run, with diffs, rationale and per-level scores.
-- The agent reaches memory through a loopback gateway (`memory.py recall` runs `$text` searches scoped to its own run), so it never holds database credentials.
-- The dashboard's Memory tab is fed by a MongoDB change stream, so a document appears, changes or disappears on screen as it does in the database.
+- `events`: one ordered timeline per run of the agent's reasoning, code, tool results, harness messages, and every memory write and search.
+- `runs`: one document per game with its per-level action counts against the human baseline.
+- The dashboard's Memory tab follows `notes` through a change stream, so a note appears, changes or disappears on screen as it does in the database.
 
 Schema: [docs/SCHEMA.md](docs/SCHEMA.md).
 
@@ -60,35 +46,20 @@ Schema: [docs/SCHEMA.md](docs/SCHEMA.md).
 
 `python -m mongoarc.view` serves a page that reads only from MongoDB.
 
-- **Live play:** the game board as it is played, or replayed at any speed; an on-screen controller that lights the button the agent pressed and marks each pixel it clicks; the agent's reasoning and code; the rule book growing at each level; the memory banks with live counts and the notes this run has written.
-- **Evolution:** for one game, each generation's diff and the distiller's rationale, and actions against the human baseline level by level, with a no-memory control run of the same game overlaid when there is one.
-- **Memory:** the four memory banks (lessons, notes, rule books, generations). Open one to read its documents, raw JSON included, updating as MongoDB reports each insert, update and delete.
+- **Live play:** the game board as it is played, or replayed at any speed; an on-screen controller that lights the button the agent pressed and marks each pixel it clicks; the agent's reasoning and code; the notes it has saved; and each memory search highlighted as it happens.
+- **Levels:** for one game, actions spent on each level against the human baseline, with the memory writes and searches made on that level, and a no-memory control run of the same game overlaid when there is one.
+- **Memory:** the notes bank. Open it to read the documents, raw JSON included, updating live.
 
-A walkthrough for a demo is in [docs/DEMO.md](docs/DEMO.md).
+Columns can be resized by dragging, and the text size follows the window (or the A- / A+ control). A walkthrough for a demo is in [docs/DEMO.md](docs/DEMO.md).
 
 ## Run it
 
-Requirements: Python 3.11+, `pip install pymongo fastapi uvicorn numpy pillow`, a MongoDB connection string, and the `claude` CLI for real agents.
+Requirements: Python 3.11+, `pip install pymongo fastapi uvicorn numpy pillow`, a MongoDB Atlas connection string, and the `claude` CLI for real agents.
 
 ```bash
 git clone --recurse-submodules https://github.com/dastin359/MongoARC && cd MongoARC
 cp .env.example .env          # set MONGODB_URI (and ARC_API_KEY for real games)
 python -m mongoarc.view --port 8787 &
-```
-
-Zero cost (a scripted stand-in agent on a bundled toy game, heuristic distiller):
-
-```bash
-python3 tools/mock_arc.py 18765 &
-python -m mongoarc.launch --game mk01-toy --out-dir runs/demo-fake --agent fake \
-    --arc-root http://127.0.0.1:18765 --collect --distiller heuristic
-```
-
-A real agent on a toy game, with Claude as the distiller:
-
-```bash
-python -m mongoarc.launch --game mk05-doors --out-dir runs/demo-toy --agent claude \
-    --model claude-sonnet-5-5 --arc-root http://127.0.0.1:18765 --collect
 ```
 
 A real ARC-AGI-3 game (needs `ARC_API_KEY`; list ids with `PYTHONPATH=CCARC/src python3 -m ccarc arc-3 games`):
@@ -98,18 +69,28 @@ python -m mongoarc.launch --game sb26-7fbdac44 --out-dir runs/sb26 --agent claud
     --model claude-opus-5-5 --collect --timeout 1500
 ```
 
-A control run of the same game (no memory tool, no lessons, no evolution) for comparison:
+A control run of the same game: plain CCARC, with its own doctrine and gate and no memory tool:
 
 ```bash
 python -m mongoarc.launch --game sb26-7fbdac44 --out-dir runs/sb26-control --agent claude \
     --model claude-opus-5-5 --no-memory --role control --collect --timeout 1500
 ```
 
+At no cost, a scripted stand-in agent on a bundled toy game (it exercises the launcher, the collector and the dashboard, but does not use the memory tool):
+
+```bash
+python3 tools/mock_arc.py 18765 &
+python -m mongoarc.launch --game mk01-toy --out-dir runs/demo-fake --agent fake \
+    --arc-root http://127.0.0.1:18765 --collect
+```
+
+Semantic search needs Atlas. On a plain local `mongod`, `recall` falls back to the text index.
+
 ## What is new here and what is not
 
-- **Not new:** [CCARC](https://github.com/dastin359/CCARC), the driver that runs Claude Code against the ARC-AGI-3 API. It is included as an unmodified git submodule and is prior work. MongoARC wraps it from the outside; no file in it is changed. The agent's prompt is changed only in each game's workspace copy.
-- **Built during the hackathon:** everything else in this repository: the collector, the MongoDB schema, the per-level evolution loop (score, distil, rewrite, inject), the mid-game coach, the agent memory gateway and tool, the notes sync, the dashboard, and the toy-game suite used to exercise the loop at no cost.
+- **Not new:** [CCARC](https://github.com/dastin359/CCARC), the driver that runs Claude Code against the ARC-AGI-3 API. It is included as an unmodified git submodule and is prior work. MongoARC wraps it from the outside; no file in it is changed. The doctrine MongoARC gives the agent is derived from CCARC's.
+- **Built during the hackathon:** everything else in this repository: the collector, the MongoDB schema, the memory gateway and the agent's memory tool, the Atlas Vector Search setup, the launcher and its level-boundary prompts, the dashboard, and the toy-game suite used for testing.
 
-The toy games in `tools/mock_arc.py` are not ARC-AGI-3. They share its API shape and have several levels that reuse mechanics, which is what the loop needs to be exercised.
+The toy games in `tools/mock_arc.py` are not ARC-AGI-3; they share its API shape and are used only for testing.
 
-For the hackathon the CCARC sandbox guards (network isolation, filesystem confinement) are turned off, and the prompt says so. Results produced this way are demonstrations, not benchmark scores.
+For the hackathon the CCARC sandbox guards (network isolation, filesystem confinement) are turned off; the doctrine still tells the agent not to use the network and to stay in its directory. Results produced this way are demonstrations, not benchmark scores.

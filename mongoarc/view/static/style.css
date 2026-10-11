@@ -126,7 +126,7 @@ a.run:hover { color: #fff; }
 .lvrow .base { position: absolute; top: -4px; bottom: -4px; width: 2px; background: #fff; box-shadow: 0 0 0 1px var(--panel); }
 .lvrow .val { text-align: right; color: var(--ink); white-space: nowrap; }
 .lvrow .val small { color: var(--ink3); font-size: 11px; }
-.rules { flex: 1; } .harness, .membanks { flex: 1.15; }
+.rules { flex: 1; } .membanks { flex: none; }
 .rb h3 { margin: 0; padding: 7px 10px 2px; font: 700 10px var(--mono); letter-spacing: .12em; }
 .rb h3.v { color: var(--green); } .rb h3.r { color: var(--red); } .rb h3.o { color: var(--yellow); }
 .rule { padding: 3px 10px 3px 8px; border-left: 3px solid transparent; font-size: 13px; line-height: 1.35; display: flex; gap: 7px; align-items: baseline; }
@@ -138,9 +138,7 @@ a.run:hover { color: #fff; }
 .hgen { display: flex; align-items: center; gap: 8px; padding: 8px 10px 4px; flex-wrap: wrap; }
 .hgen .g { font: 700 22px var(--mono); }
 .hgen .k { font: 500 11px var(--mono); color: var(--ink3); }
-.lesson { padding: 5px 10px 6px; border-top: 1px solid var(--line); font-size: 13px; line-height: 1.35; }
-.lesson .id { font: 700 11px var(--mono); color: var(--yellow); margin-right: 6px; }
-.lesson .kind, td .kind { font: 700 9px var(--mono); letter-spacing: .08em; color: var(--ink3); border: 1px solid var(--line); border-radius: 2px; padding: 1px 4px; margin-right: 6px; text-transform: uppercase; white-space: nowrap; }
+td .kind { font: 700 9px var(--mono); letter-spacing: .08em; color: var(--ink3); border: 1px solid var(--line); border-radius: 2px; padding: 1px 4px; margin-right: 6px; text-transform: uppercase; white-space: nowrap; }
 
 /* feed */
 .feedcol { min-height: 0; }
@@ -172,14 +170,14 @@ a.run:hover { color: #fff; }
 .ev.mem { border-left-color: var(--purple); background: rgba(163,86,214,.13); margin: 3px 0; }
 .ev.mem .meta b { color: #c99bea; }
 .ev.mem .q { font: 500 12.5px var(--mono); color: var(--ink); }
-.ev.mem .q::before { content: "query  "; color: var(--ink3); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; }
+.ev.mem .q::before { content: "question  "; color: var(--ink3); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; }
 .ev.mem .ids { font: 700 11px var(--mono); color: #c99bea; margin-top: 2px; }
 .ev.system .body, .ev.result .body { color: var(--ink3); font: 12px var(--mono); }
 
 /* tab 2 */
 .evo { display: grid; grid-template-columns: minmax(330px, .8fr) minmax(0, 1.5fr); gap: 10px; padding: 10px; min-height: 0; }
 .evoright { display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 10px; min-height: 0; min-width: 0; }
-.tiles { display: grid; grid-template-columns: 1.05fr .75fr .85fr 1.75fr 1.55fr; gap: 10px; }
+.tiles { display: grid; grid-template-columns: .8fr .8fr 1.25fr 1.1fr 1.7fr; gap: 10px; }
 .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px 9px; min-width: 0; }
 .tile .num { font: 700 clamp(26px, 2.8vw, 42px)/1.2 var(--mono); letter-spacing: -.03em; white-space: nowrap; }
 .tile .num { overflow: hidden; text-overflow: ellipsis; }
@@ -192,7 +190,7 @@ a.run:hover { color: #fff; }
 .legend .dot { width: 10px; height: 10px; border-radius: 50%; }
 .legend .bar { width: 6px; height: 14px; border-radius: 2px 2px 0 0; background: #3a4656; }
 .legend .dash { width: 18px; border-top: 2px dashed var(--ink2); }
-.chart { padding: 2px 6px 4px; height: clamp(190px, 30vh, 320px); }
+.chart { padding: 2px 6px 4px; height: clamp(206px, 32vh, 336px); }
 .chart svg { width: 100%; height: 100%; display: block; }
 .chart text { font: 500 11px var(--mono); fill: var(--ink3); }
 .chart text.t { fill: var(--ink2); font-weight: 700; }
@@ -232,7 +230,7 @@ details.add { margin-top: 7px; }
 details.add summary { font: 700 10px var(--mono); letter-spacing: .1em; color: var(--ink2); cursor: pointer; }
 details.add pre { margin: 5px 0 0; padding: 7px 9px; background: #05070a; border: 1px solid var(--line); border-radius: 3px; font: 12px/1.45 var(--mono); color: var(--ink2); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow-y: auto; }
 
-/* short screens (720p projectors): tighter counters so the rule book and the carried lessons keep their room */
+/* short screens (720p projectors): tighter counters so the notes and the memory panel keep their room */
 @media (max-height: 800px) {
   .game { font-size: 19px; }  /* a 13-character game id whole, with room left for the action tape */
   .stagehead { gap: 8px; }
@@ -246,7 +244,6 @@ details.add pre { margin: 5px 0 0; padding: 7px 9px; background: #05070a; border
   .lvrow { height: 19px; }
   .hgen { padding: 6px 10px 3px; }
   .hgen .g { font-size: 18px; }
-  .lesson { padding: 4px 10px 5px; font-size: 12.5px; }
   .rule { font-size: 12.5px; padding: 2px 10px 2px 8px; }
   .rb h3 { padding-top: 5px; }
 }
@@ -263,21 +260,26 @@ details.add pre { margin: 5px 0 0; padding: 7px 9px; background: #05070a; border
 
 /* live-page memory panel */
 .membanks { display: flex; flex-direction: column; min-height: 0; }
-.mbgrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; padding: 8px 10px; }
-.mb { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 6px 8px; background: #0b0f15; border: 1px solid var(--line); border-left: 3px solid #8a94a3; border-radius: 4px; color: var(--ink); cursor: pointer; text-align: left; min-width: 0; }
-.mb:hover { background: #121924; }
-.mb b { font: 700 24px/1 var(--mono); }
-.mb span { font: 700 10px/1.2 var(--mono); letter-spacing: .04em; text-transform: uppercase; color: var(--ink2); }  /* wraps: "harness gens" is wider than a tile */
-.mb-lessons { border-left-color: #FFDC00; } .mb-notes { border-left-color: #1E93FF; } .mb-rulebooks { border-left-color: #4FCC30; } .mb-generations { border-left-color: #A356D6; }
-.mb.pulse { animation: mbpulse 1.2s ease-out; }
-@keyframes mbpulse { 0% { background: rgba(255,220,0,.45); } 100% { background: #0b0f15; } }
-.membanks h2.sub { border-top: 1px solid var(--line); }
+.membanks { cursor: pointer; }
+.membanks:hover h2 { color: var(--ink); }
+.memsum { display: flex; align-items: baseline; gap: 9px; padding: 6px 10px 5px; flex: none; }
+.memsum b { font: 700 26px/1 var(--mono); color: var(--blue); }
+.memsum span { font: 700 10px var(--mono); letter-spacing: .06em; color: var(--ink2); text-transform: uppercase; }
+.memsum i { margin-left: auto; font: 500 10px var(--mono); font-style: normal; color: var(--ink3); text-transform: uppercase; letter-spacing: .06em; }
+#memEvents { padding: 0 0 6px; }
+.mev { display: grid; grid-template-columns: 66px 20px minmax(0, 1fr); gap: 6px; align-items: baseline; padding: 2px 10px; font-size: 12.5px; }
+.mev b { font: 700 10px var(--mono); letter-spacing: .08em; color: var(--blue); }
+.mev.update b { color: var(--yellow); } .mev.delete b { color: var(--red); } .mev.search b { color: #c99bea; }
+.mev .lv { font: 700 10px var(--mono); color: var(--ink3); }
+.mev .txt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mev.search .txt { font: 500 12px var(--mono); }
 .mnote { padding: 6px 10px 8px; border-bottom: 1px solid var(--line); cursor: pointer; }
-.mnote .mh { display: flex; justify-content: space-between; gap: 8px; font: 700 11px var(--mono); color: #1E93FF; margin-bottom: 3px; }
+.mnote .mh { display: flex; align-items: baseline; gap: 8px; font: 700 11px var(--mono); color: #1E93FF; margin-bottom: 3px; }
+.mnote .mh strong { flex: 1 1 0; min-width: 0; font: 600 13px var(--sans); color: var(--ink); }
 .mnote .mh span { color: var(--ink3); }
-.mnote pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: 400 12px/1.45 var(--mono); color: var(--ink); max-height: 220px; overflow: hidden; }
+.mnote pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: 400 12.5px/1.4 var(--sans); color: var(--ink2); max-height: 220px; overflow: hidden; }
 
-/* per-level evolution (tab 2 is about one run) and the new harness events */
+/* LEVELS tab (about one run) and the harness events */
 .chip.ctl { color: #000; background: var(--orange); border-color: var(--orange); }
 .evoscope { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-bottom: 1px solid var(--line); flex: none; min-width: 0; }
 .evoscope b { font: 700 17px var(--mono); letter-spacing: -.02em; white-space: nowrap; }
@@ -322,3 +324,42 @@ details.add pre { margin: 5px 0 0; padding: 7px 9px; background: #05070a; border
 .memtab .mem-runf span { max-width: 27ch; }
 .memtab .mem-sub { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .memtab .mem-root .mem-runf button { font: 700 11px var(--mono); letter-spacing: .08em; color: #000; background: var(--cyan); border-radius: 3px; padding: 4px 8px; }
+/* LEVELS tab: memory activity grouped by level, and the notes table */
+.mgroup { border-bottom: 1px solid var(--line); padding-bottom: 7px; }
+.mghd { display: flex; align-items: baseline; gap: 10px; padding: 9px 12px 5px; position: sticky; top: 0; background: var(--panel); z-index: 1; }
+.mghd b { font: 700 15px var(--mono); letter-spacing: -.01em; white-space: nowrap; }
+.mghd span { font: 500 11px var(--mono); color: var(--ink3); flex: 1 1 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mghd i { font: 700 12px var(--mono); font-style: normal; }
+.mghd i.good { color: var(--green); } .mghd i.over { color: var(--orange); } .mghd i.bad { color: var(--red); }
+.mact { margin: 4px 10px 0; padding: 6px 9px 7px; border-left: 3px solid var(--blue); background: var(--panel2); border-radius: 0 4px 4px 0; }
+.mact .h { display: flex; gap: 8px; align-items: baseline; }
+.mact .h b { font: 700 10px var(--mono); letter-spacing: .1em; color: var(--blue); flex: none; }
+.mact .h .id { font: 700 12px var(--mono); color: var(--ink); flex: none; }
+.mact .h .id:empty { display: none; }
+.mact .h .t { font-weight: 600; font-size: 13px; min-width: 0; overflow-wrap: anywhere; }
+.mact .x { margin-top: 3px; font-size: 13px; line-height: 1.4; color: var(--ink2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.mact .r { margin-top: 3px; font: 500 11.5px var(--mono); color: #c99bea; }
+.mact.update { border-left-color: var(--yellow); } .mact.update .h b { color: var(--yellow); }
+.mact.delete { border-left-color: var(--red); } .mact.delete .h b { color: var(--red); }
+.mact.delete .x { text-decoration: line-through; text-decoration-color: var(--red); color: var(--ink3); }
+.mact.search { border-left-color: var(--purple); background: rgba(163,86,214,.1); }
+.mact.search .h b { color: #c99bea; } .mact.search .h .t { font: 500 12.5px var(--mono); }
+.lt td.id { color: var(--blue); } .lt td.ttl { font-weight: 600; min-width: 150px; }
+.lt td.refs { font: 500 11.5px var(--mono); color: var(--cyan); white-space: nowrap; } .lt td.refs span { display: block; }
+.chart text.w { fill: var(--blue); font-weight: 700; }
+.ev.mem .gone { text-decoration: line-through; text-decoration-color: var(--red); color: var(--ink3); }
+@media (max-height: 800px) { .mev { font-size: 12px; padding: 1px 10px; } .memsum b { font-size: 22px; } }
+
+/* a memory search is the moment to notice: a stronger feed entry and a banner over the board */
+.ev.mem.recall { border-left: 4px solid #E53AA3; background: rgba(229,58,163,.17); box-shadow: inset 0 0 0 1px rgba(229,58,163,.5); }
+.ev.mem.recall .meta b { color: #ff8fd0; }
+.ev.mem.recall .q { font: 700 14px/1.35 var(--mono); color: #fff; margin: 2px 0; }
+.ev.mem.recall .ids { color: #ff8fd0; }
+.recallbanner { position: absolute; left: 3%; right: 3%; top: 3%; z-index: 6; padding: 10px 14px; border: 2px solid #E53AA3; border-radius: 6px;
+  background: rgba(14,8,14,.93); box-shadow: 0 0 0 2px #000, 0 0 26px 4px rgba(229,58,163,.55); pointer-events: none; opacity: 0; transform: translateY(-8px); transition: opacity .25s, transform .25s; }
+.recallbanner.on { opacity: 1; transform: none; }
+.recallbanner .rb-h { font: 700 12px var(--mono); letter-spacing: .14em; color: #ff8fd0; }
+.recallbanner .rb-q { font: 700 clamp(15px, 1.5vw, 22px)/1.3 var(--mono); color: #fff; margin: 4px 0; overflow-wrap: anywhere; }
+.recallbanner .rb-r { font: 600 12px var(--mono); color: #c9cfd8; }
+.membanks.recallpulse { animation: recallpulse 1.6s ease-out; }
+@keyframes recallpulse { 0% { box-shadow: 0 0 0 3px #E53AA3, 0 0 22px 4px rgba(229,58,163,.6); } 100% { box-shadow: none; } }

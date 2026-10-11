@@ -1,11 +1,17 @@
-"""The notes memory bank: mirror the agent's prose into MongoDB and keep it in sync.
+"""The file mirror of the notes memory bank: text files under notes/ kept in sync with MongoDB.
 
-The agent keeps prose in <workspace>/notes/ and code in <workspace>/scripts/.
-Only the prose is pushed, one document per text file in the `notes` collection
-(docs/SCHEMA.md). The mirror is a true sync, not an append log: an edited file
-updates its document in place (version + 1) and a deleted file deletes its
-document. Scripts stay on disk; a note points at them through `refs`, and
-`script_path()` turns a ref back into the file.
+The agent now writes its prose straight into the `notes` collection through
+memory.py and the memory gateway (documents with source "tool" and a path
+"mem/<n>"); it is told to keep only code as files, in <workspace>/scripts/.
+This mirror remains for any text file that still appears under
+<workspace>/notes/: one document per file (docs/SCHEMA.md), path "notes/...".
+It is a true sync, not an append log: an edited file updates its document in
+place (version + 1) and a deleted file deletes its document. It owns only the
+documents whose path starts with "notes/": the load of what is stored and the
+deletion both exclude the notes written through the tool, so an empty or
+missing notes/ directory never removes them. Scripts stay on disk; a note
+points at them through `refs`, and `script_path()` turns a ref back into the
+file.
 
 `NotesSync.sync()` is called for every run on every collector pass, so the
 steady state is free: an unchanged directory costs one scandir per directory
@@ -38,6 +44,16 @@ _REF = re.compile(
     r"scripts/(?P<full>[\w.-]+(?:/[\w.-]+)*\.\w{1,8})"
     r"|(?P<bare>[\w-][\w.-]*\.(?:py|sh))"
     r")(?![\w-])")
+
+
+# The documents this mirror owns. The agent's own notes are written straight into the same
+# collection by the memory gateway (source "tool", path "mem/<n>"); nothing here may touch them.
+FILE_NOTES = {"source": {"$ne": "tool"}, "path": {"$regex": "^notes/"}}
+
+
+def is_file_path(path) -> bool:
+    """Whether a stored path is a file under notes/, i.e. a document this mirror may write or delete."""
+    return isinstance(path, str) and path.startswith("notes/")
 
 
 def is_note_name(name: str) -> bool:
@@ -189,8 +205,11 @@ class NotesSync:
         if fresh:
             # Once per run and process: what MongoDB already holds, so a restart over an
             # unchanged directory rewrites nothing and bumps no version.
+            # Only the documents this mirror owns: a note the agent saved through memory.py
+            # (source "tool", path "mem/<n>") has no file and must never be judged "gone".
             st.stored = {d["path"]: d.get("sha")
-                         for d in self.col.find({"run_id": run_id}, {"path": 1, "sha": 1}) if d.get("path")}
+                         for d in self.col.find({"run_id": run_id, **FILE_NOTES}, {"path": 1, "sha": 1})
+                         if is_file_path(d.get("path"))}
             self._runs[run_id] = st
 
         wall = time.time()
@@ -228,7 +247,8 @@ class NotesSync:
                 changed[path] = note
         st.seen = seen
 
-        gone = [p for p in st.stored if p not in keep]
+        gone = [p for p in st.stored if p not in keep and is_file_path(p)]
+        changed = {p: note for p, note in changed.items() if is_file_path(p)}
         if not changed and not gone:
             return 0
         at = D.now()
@@ -240,7 +260,7 @@ class NotesSync:
                                         "generation": generation, "path": path}},
                       upsert=True)
             for path, (sha, text) in changed.items()]
-        ops += [DeleteOne({"_id": f"{run_id}:{path}"}) for path in gone]
+        ops += [DeleteOne({"_id": f"{run_id}:{path}", "run_id": run_id, **FILE_NOTES}) for path in gone]
         try:
             res = self.col.bulk_write(ops, ordered=False)
         except PyMongoError:

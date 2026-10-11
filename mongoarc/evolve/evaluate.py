@@ -93,12 +93,13 @@ def evaluate_run(db: Database, run_id: str) -> dict[str, Any]:
 
 
 def level_curve(db: Database, run_id: str) -> list[dict[str, Any]]:
-    """The hard metric: per level of one game, actions against the baseline and the generation it was played under.
+    """Per cleared level of one run, in order: {level, actions, baseline, efficiency}.
 
-    Read from the run's own generation lineage (`played` is filled in when the
-    level is cleared), so a level still in progress is not in the curve.
+    Counted from the stored ledger, so a level still in progress is not in the curve.
     """
-    out = []
-    for g in db[D.GENERATIONS].find({"run_id": run_id, "played": {"$ne": None}}).sort("k", 1):
-        out.append({**g["played"], "k": g.get("k"), "generation": g["_id"], "lessons": len(g.get("lessons") or [])})
-    return out
+    run = db[D.RUNS].find_one({"_id": run_id}, projection={"baseline_actions": 1, "win_levels": 1})
+    if run is None:
+        return []
+    counts, cleared = _counts_from_db(db, run_id)
+    levels = build_metrics(counts, cleared, run.get("baseline_actions"), run.get("win_levels"))["levels"]
+    return [{k: l[k] for k in ("level", "actions", "baseline", "efficiency")} for l in levels if l["cleared"]]

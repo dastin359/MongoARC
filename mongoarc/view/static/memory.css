@@ -17,11 +17,11 @@
 .mem-root h3, .mem-root h4, .mem-root p, .mem-root pre { margin: 0; }
 .mem-root .mem-grow { flex: 1 1 0; min-width: 0; }
 
-/* rail: the four banks */
+/* rail: the notes tile, and under it the change-stream log */
 .mem-rail { display: flex; flex-direction: column; gap: 8px; min-height: 0; min-width: 0; }
 .mem-root .mem-tile {
   position: relative; flex: none; display: grid; grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-areas: "name count" "desc count" "last last"; gap: 3px 10px; align-items: start;
+  grid-template-areas: "name count" "desc count" "scope scope" "last last"; gap: 3px 10px; align-items: start;
   padding: 10px 12px 9px 13px; text-align: left; cursor: pointer; color: var(--mem-ink); font: inherit;
   background: var(--mem-panel); border: 1px solid var(--mem-line); border-left: 5px solid var(--mem-acc); border-radius: 6px;
 }
@@ -185,3 +185,8 @@
   .mem-sub span { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { .mem-root * { animation-duration: .01s !important; } }
+/* one bank: the tile says how many notes the selected run has and how many there are in all */
+.mem-tscope { grid-area: scope; margin-top: 5px; padding-top: 6px; border-top: 1px solid var(--mem-line); font: 500 11.5px/1.6 var(--mem-mono); color: var(--mem-ink2); overflow-wrap: anywhere; }
+.mem-tscope b { color: var(--mem-ink); font-weight: 700; }
+.mem-feed h3 em { font: 500 11px var(--mem-sans); letter-spacing: 0; color: var(--mem-ink3); font-style: normal; margin-left: 6px; }
+.mem-ntitle { font: 700 15px var(--mem-sans); color: var(--mem-ink); overflow-wrap: anywhere; }

@@ -1,9 +1,10 @@
-"""Live memory browser: the four memory banks, read straight from MongoDB.
+"""Live memory browser: the agent's notes, read straight from MongoDB.
 
-`router` is a fastapi.APIRouter the live view includes:
+The memory is one collection, db.notes: the agent writes every note itself, Atlas embeds the text and
+answers the agent's plain-language searches. `router` is a fastapi.APIRouter the live view includes:
 
-    GET /api/memory/banks?run_id=             the four banks with live counts (run_count: one run's documents)
-    GET /api/memory/runs                      run_id -> {game_id, generation, status} (labels for cards)
+    GET /api/memory/banks?run_id=             the bank (notes) with live counts (run_count: one run's documents)
+    GET /api/memory/runs                      run_id -> {game_id, status} (labels for cards)
     GET /api/memory/stream                    Server-Sent Events fed by a MongoDB change stream
     GET /api/memory/{bank}?limit=&q=&run_id=  documents, newest first
     GET /api/memory/{bank}/{doc_id}           one document
@@ -35,15 +36,14 @@ HEARTBEAT_S = 10.0
 POLL_S = 1.0
 OPS = ("insert", "update", "replace", "delete")
 
-# label, one-line description, the field that says when a document last changed
+# label, one-line description, the field that says when a document last changed.
+# Collections of the earlier design (lessons, generations, rulebooks) are not banks: an old database's are not listed.
 BANKS = {
-    D.LESSONS: ("LESSONS", "What a cleared level taught, kept for the later levels of the same game only.", "created_at"),
-    D.NOTES: ("NOTES", "The prose the agent writes while it plays, one document per file.", "updated_at"),
-    D.RULEBOOKS: ("RULEBOOKS", "What each game's agent verified and refuted.", "at"),
-    D.GENERATIONS: ("GENERATIONS", "Versions of the harness within one game: a new one per cleared level.", "created_at"),
+    D.NOTES: ("NOTES", "What the agent wrote down, one document per note. Atlas embeds each note and answers "
+                       "the agent's plain-language searches.", "updated_at"),
 }
 # Fields the substring fallback searches when $text finds nothing (it matches whole words only).
-TEXT_FIELDS = {D.LESSONS: ["text", "tags", "_id", "kind"], D.NOTES: ["text", "path", "_id", "game_id"]}
+TEXT_FIELDS = ["text", "title", "_id", "game_id"]
 
 router = APIRouter()
 _streams = {"active": 0, "opened": 0, "mode": None}
@@ -65,21 +65,11 @@ def _bank(name: str) -> str:
 
 
 def _sort(bank: str) -> list[tuple[str, int]]:
-    if bank == D.GENERATIONS:
-        return [("_id", -1)]
     return [(BANKS[bank][2], -1), ("_id", -1)]
 
 
 def _run_filter(bank: str, run_id: str) -> dict:
-    if not run_id:
-        return {}
-    # Lessons and generations belong to one run (run_id). The other clauses match documents written before
-    # that, which named runs only as evidence or as the games a generation was scored on.
-    if bank == D.LESSONS:
-        return {"$or": [{"run_id": run_id}, {"evidence.run_id": run_id}, {"stats.runs": run_id}]}
-    if bank == D.GENERATIONS:
-        return {"$or": [{"run_id": run_id}, {"created_from_run": run_id}, {"fitness.runs": run_id}]}
-    return {"run_id": run_id}
+    return {"run_id": run_id} if run_id else {}
 
 
 def _bank_state(db, bank: str) -> tuple[int, object]:
@@ -105,10 +95,9 @@ def banks(run_id: str = ""):
 
 @router.get("/api/memory/runs")
 def run_labels(limit: int = Query(1000, ge=1, le=5000)):
-    """run_id -> the few run fields a memory card shows next to a run id (rulebooks carry no game_id)."""
-    cur = _db()[D.RUNS].find({}, {"game_id": 1, "generation": 1, "status": 1}).sort("started_at", -1).limit(limit)
-    return _json({r["_id"]: {"game_id": r.get("game_id"), "generation": r.get("generation"),
-                             "status": r.get("status")} for r in cur})
+    """run_id -> the few run fields a memory card shows next to a run id."""
+    cur = _db()[D.RUNS].find({}, {"game_id": 1, "status": 1}).sort("started_at", -1).limit(limit)
+    return _json({r["_id"]: {"game_id": r.get("game_id"), "status": r.get("status")} for r in cur})
 
 
 # ---------------------------------------------------------------- change stream
@@ -238,60 +227,37 @@ async def stream(request: Request):
 
 # ---------------------------------------------------------------- documents
 
-def _regex_filter(docs: list[dict], q: str) -> list[dict]:
-    rx = re.compile(re.escape(q), re.IGNORECASE)
-    return [d for d in docs if rx.search(json.dumps(D.jsonable(d), ensure_ascii=False))]
-
-
 @router.get("/api/memory/{bank}")
-def documents(bank: str, limit: int = Query(100, ge=1, le=1000), q: str = "", run_id: str = "",
-              all_versions: int = 0):
-    """Documents of one bank, newest first, exactly as stored.
+def documents(bank: str, limit: int = Query(100, ge=1, le=1000), q: str = "", run_id: str = ""):
+    """Documents of the bank, newest change first, exactly as stored.
 
-    q: $text search on lessons and notes (substring match when no whole word hits); a
-    case-insensitive match over the JSON text on rulebooks and generations.
-    rulebooks: the latest version per run unless all_versions=1.
+    q: a $text search for the page's search box (substring match when no whole word hits). This is the
+    viewer's filter, not the agent's search: the agent's recall goes through Atlas Vector Search.
     """
     coll = _db()[_bank(bank)]
     base = _run_filter(bank, run_id)
     q = q.strip()
     mode = "none"
-    if bank in TEXT_FIELDS:
-        docs: list[dict] = []
-        if q:
-            mode = "text"
-            try:
-                docs = list(coll.find({**base, "$text": {"$search": q}}).sort(_sort(bank)).limit(limit))
-            except OperationFailure:  # no text index on this database yet
-                docs = []
-            if not docs:
-                mode = "regex"
-                rx = {"$regex": re.escape(q), "$options": "i"}
-                match = {"$or": [{f: rx} for f in TEXT_FIELDS[bank]]}
-                docs = list(coll.find({"$and": [base, match]}).sort(_sort(bank)).limit(limit))
-        else:
-            docs = list(coll.find(base).sort(_sort(bank)).limit(limit))
-    else:
-        pipeline: list[dict] = [{"$match": base}] if base else []
-        if bank == D.RULEBOOKS and not all_versions:
-            pipeline += [{"$sort": {"run_id": 1, "version": -1}},
-                         {"$group": {"_id": "$run_id", "doc": {"$first": "$$ROOT"}}},
-                         {"$replaceRoot": {"newRoot": "$doc"}}]
-        pipeline.append({"$sort": dict(_sort(bank))})
-        if q:
+    docs: list[dict] = []
+    if q:
+        mode = "text"
+        try:
+            docs = list(coll.find({**base, "$text": {"$search": q}}).sort(_sort(bank)).limit(limit))
+        except OperationFailure:  # no text index on this database yet
+            docs = []
+        if not docs:
             mode = "regex"
-            docs = _regex_filter(list(coll.aggregate(pipeline + [{"$limit": 5000}])), q)[:limit]
-        else:
-            docs = list(coll.aggregate(pipeline + [{"$limit": limit}]))
+            rx = {"$regex": re.escape(q), "$options": "i"}
+            match = {"$or": [{f: rx} for f in TEXT_FIELDS]}
+            docs = list(coll.find({"$and": [base, match]}).sort(_sort(bank)).limit(limit))
+    else:
+        docs = list(coll.find(base).sort(_sort(bank)).limit(limit))
     return _json(docs, {"X-Memory-Search": mode})
 
 
 @router.get("/api/memory/{bank}/{doc_id:path}")
 def document(bank: str, doc_id: str):
-    coll = _db()[_bank(bank)]
-    doc = coll.find_one({"_id": doc_id})
-    if doc is None and re.fullmatch(r"-?\d+", doc_id):  # generations are keyed by int
-        doc = coll.find_one({"_id": int(doc_id)})
+    doc = _db()[_bank(bank)].find_one({"_id": doc_id})
     if doc is None:
         raise HTTPException(404, f"no such document in {bank}: {doc_id}")
     return _json(doc)

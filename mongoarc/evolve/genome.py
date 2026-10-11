@@ -27,28 +27,9 @@ LESSON_CHARS = 500
 START_MARK = "<!-- mongoarc:lessons:start -->"
 END_MARK = "<!-- mongoarc:lessons:end -->"
 
-NETWORK_NOTE = (
-    "### Environment note (hackathon)\n\n"
-    "Network access beyond the game API is permitted in this environment, so the "
-    "\"Do not use the network\" constraint above does not apply here. Every other "
-    "constraint stands: play only through `client`, and working out the rules is still the task.\n")
-
-# What the agent is told about its memory. CCARC's doctrine knows nothing of `memory.py` or `scripts/`,
-# so this section of the workspace CLAUDE.md is the only place the agent can learn of them.
-MEMORY_NOTE = (
-    "### Memory for this game\n\n"
-    "This game starts with an empty memory. It holds only what THIS game's earlier levels produced: the notes "
-    "you wrote, the rules you committed at each level gate, and the lessons the harness distilled from them "
-    "each time you cleared a level. Nothing in it comes from another game.\n\n"
-    "- **At the start of every level, before your first action on it**, run "
-    "`python3 memory.py recall <words for what you see>` (object colours, shapes, \"key\", \"wall\", the "
-    "actions on offer, ...). A search costs no game actions. Later levels reuse what the earlier ones taught "
-    "with a new layout, so what comes back is the cheapest way to avoid paying for the same discovery twice.\n"
-    "- **Each time you clear a level**, write what you verified to `notes/mechanics.md` and keep it up to date; "
-    "prose under `notes/` is stored as you write it. Say what each object looks like and does, what each "
-    "action does, what is fatal, and what has to happen in which order.\n"
-    "- Code goes in `scripts/` and is not stored; name the script in the note that explains it.\n\n"
-    "`memory.py` talks to a service the harness runs on this machine.\n")
+# The marked section holds the lessons and nothing else. How the agent uses its memory (`memory.py`), where
+# code goes (`scripts/`) and the network rule are stated once, in the doctrine the launcher puts above it
+# (mongoarc/assets/ARC3_DOCTRINE.md): a second copy here would drift from it.
 
 # A cell, or two bare numbers side by side: one level's layout, which the next level will not share.
 _COORD = re.compile(r"[(\[]\s*-?\d+\s*,\s*-?\d+\s*[)\]]|\b(?:x|y|row|col|column)\s*(?:=|==)\s*\d+\b", re.I)
@@ -90,10 +71,12 @@ def launch_settings(knobs: dict | None) -> dict[str, Any]:
 
 
 def render_addendum(gen: dict, lessons: list[dict], memory: bool = True) -> str:
-    """The section appended to the workspace CLAUDE.md, between START_MARK and END_MARK.
+    """The lessons section appended to the workspace CLAUDE.md, between START_MARK and END_MARK.
 
-    `memory=False` leaves out the memory section, for a launch that gives the
-    agent no `memory.py`.
+    Lessons only: the heading, a short explanation and the numbered lessons, or
+    the sentence saying they will appear. `memory=False` is a launch that
+    promises the agent no lessons (a control run): with no lesson to show, the
+    marked section is empty (see `has_content`).
     """
     k = int(gen.get("k") or 0)
     live = [l for l in lessons if l.get("status", "active") == "active"]
@@ -102,17 +85,26 @@ def render_addendum(gen: dict, lessons: list[dict], memory: bool = True) -> str:
         out += [f"## Lessons from the levels you have cleared (harness generation {k})", ""]
     if live:
         out += ["The harness distilled these from what you recorded on the levels of THIS game you have already "
-                "cleared (your rule book, your notes, and what each level cost). They are about this game: use "
-                "them on the level in front of you. The layout changes from level to level, so re-read the "
-                "frame before reusing a route.", ""]
+                "cleared (what you committed at each level gate, the notes you saved, and what each level cost). "
+                "They are about this game: use them on the level in front of you. The layout changes from level "
+                "to level, so re-read the frame before reusing a route.", ""]
         for i, l in enumerate(live, 1):
             out.append(f"{i}. **{l.get('kind', 'strategy')}** ({l['_id']}, after level {l.get('level')}): "
                        f"{l['text']}")
     elif memory:
         out.append("No lessons yet: this game has just started. Lessons will appear here as levels are cleared, "
                    "and they will be about this game only.")
-    out += [""] + ([MEMORY_NOTE] if memory else []) + [NETWORK_NOTE, END_MARK, ""]
+    out += ["", END_MARK, ""]
     return "\n".join(out)
+
+
+def has_content(addendum: str | None) -> bool:
+    """Whether the marked section of `addendum` holds anything for the agent to read."""
+    text = addendum or ""
+    a, b = text.find(START_MARK), text.find(END_MARK)
+    if a < 0 or b < a:
+        return bool(text.strip())
+    return bool(text[a + len(START_MARK):b].strip())
 
 
 def replace_section(doc: str, addendum: str) -> str:

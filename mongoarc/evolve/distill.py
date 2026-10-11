@@ -57,8 +57,12 @@ def _rules(entries: Any) -> list[dict]:
 
 def _notes(db: Database, run_id: str, ws: Path) -> list[dict]:
     """The agent's own prose for this run: the `notes` bank, else the files under notes/ as they stand."""
-    docs = [{"path": n.get("path"), "text": str(n.get("text") or "")[:NOTE_CHARS]}
-            for n in db[D.NOTES].find({"run_id": run_id}, {"path": 1, "text": 1}).sort("path", 1).limit(MAX_NOTES)]
+    # The newest MAX_NOTES, oldest of them first. Sorted by path, the notes saved through memory.py come out as
+    # mem/1, mem/10, mem/11, mem/2 ...: past six saves the ones about the level just cleared were the ones cut.
+    found = list(db[D.NOTES].find({"run_id": run_id}, {"path": 1, "text": 1, "title": 1})
+                 .sort([("updated_at", -1), ("_id", -1)]).limit(MAX_NOTES))[::-1]
+    docs =[{"path": n.get("path"), **({"title": n["title"]} if n.get("title") else {}),
+             "text": str(n.get("text") or "")[:NOTE_CHARS]} for n in found]
     if docs:
         return docs
     root = ws / "notes"

@@ -2,13 +2,13 @@
 
 Database: `MONGO_DB` (default `mongoarc`). Names, indexes and the frame codec live in `mongoarc/db.py`.
 
-The game agent never holds database credentials. It reaches its memory through a loopback gateway (`mongoarc.memory_gateway`, tool `memory.py` in its workspace) that searches the `lessons`, `notes` and `rulebooks` of its own run and appends a `recall` event per search. It writes memory only by saving prose under `notes/`, which the collector mirrors. Three harness components share the database:
+The game agent never holds database credentials. It reads and writes its memory through a loopback gateway (`mongoarc.memory_gateway`, tool `memory.py` in its workspace), which restricts every call to the agent's own run. Three harness components share the database:
 
-- the **collector** tails each run directory and writes `runs`, `actions`, `events`, `rulebooks`, `notes`;
-- the **launcher** and its **level evolver** write `lessons`, `generations`, the generation fields of `runs`, and `harness` events;
+- the **collector** tails each run directory and writes `runs`, `actions`, `events`;
+- the **memory gateway** writes `notes` and the `memory_write` / `recall` events, on the agent's behalf;
 - the **dashboard** only reads.
 
-Everything is scoped to a run. Nothing written for one run is read by another: a new game starts with an empty memory and its own generation 0.
+Everything is scoped to a run. Nothing written for one run is read by another: a new game starts with an empty memory.
 
 All timestamps are timezone-aware UTC `datetime`s (`db.now()`).
 
@@ -25,12 +25,8 @@ out_dir          str   absolute path of the attempt directory
 label            str|null
 agent            "claude" | "fake"
 model, effort    str|null
-role             "train" | "control"     control = launched with --no-memory: no memory tool, no level lessons
+role             "train" | "control"     control = launched with --no-memory: plain CCARC, no memory tool
 memory_tool      bool
-distiller        "claude" | "heuristic" | null (control)
-generation       int   _id of the run's active generation; changes each time a level is cleared
-gen_k            int   that generation's position in the run's lineage (0 at launch)
-lessons_used     [str] the active generation's lessons
 baseline_actions [int]|null per-level human baseline action counts
 status           "running" | "won" | "lost" | "finished" | "stopped"
 started_at, updated_at, ended_at   datetime (ended_at null while running)
@@ -39,9 +35,9 @@ level            int   0-based index of the level being played (= levels cleared
 win_levels       int   total levels in the game
 actions_used     int
 level_costs      [int] actions spent per level in the current play
-gate_pending     int|null
 deaths, full_resets, wasted_actions   int
 n_actions        int   rows ingested into `actions`
+note_seq         int   counter behind the run's note ids (N1, N2, ...)
 last_seq         int   highest `seq` issued for this run
 cost_usd, turns  number|null   from the stream's result events
 result           object|null   the workspace result.json, verbatim
@@ -94,86 +90,33 @@ _id "<run_id>:<seq>", run_id, seq, at, kind, action_n, level, ...payload by kind
 | `tool_result` | `tool_use_id`, `text` (truncated), `is_error` | collector |
 | `user_msg` | `text`: a message the harness sent into the live session | collector |
 | `system`, `result` | `subtype`, `text` / `cost_usd`, `turns`, `duration_ms`, `is_error` | collector |
-| `outbox` | `outbox_kind` (level_cleared, note, ...), `text` | collector, from `harness_outbox.jsonl` |
-| `rulebook` | `version`, `added` ({verified, refuted, open_questions}) | collector |
-| `recall` | `query`, `lessons` ([ids]), `notes` ([ids]), `rules` (count), `text` | memory gateway: the agent searched its memory |
-| `harness` | `what`, `text`, `lessons`, plus the fields below | launcher, level evolver, coach |
+| `outbox` | `outbox_kind`, `text` | collector, from `harness_outbox.jsonl` |
+| `memory_write` | `op` (save, update, delete), `note` (the note `_id`), `title`, `text` | memory gateway: the agent wrote to its memory |
+| `recall` | `query`, `notes` ([ids] returned), `engine` (atlas_vector_search, text, recent, list), `stored`, `text` | memory gateway: the agent searched or listed its memory |
+| `harness` | `what` (run_started, run_ended, memory_nudge), `text`, `level` | launcher |
 
-`harness` events by `what`:
+`memory_nudge` is the one message the harness sends during a game: at each level boundary it tells the agent to save what the level taught it and to search its memory before acting on the new level.
 
-- `run_started`, `run_ended`: launch and ending of the run.
-- `memory_nudge` {`level`: the level being started, `delivered`}: the harness told the agent to search its memory before acting on a new level.
-- `generation_created` {`generation`, `k`, `level`: the cleared level, `lessons`: ids added, `distiller`, `level_metrics`}.
-- `lessons_injected` {`generation`, `k`, `lessons`, `items`: [{id, kind, text}] all lessons active in the new generation, `changed`: ids added or revised, `delivered`, `claude_md`}.
-- `coach_note`: the mid-level coach sent lessons because the agent was stuck.
-- `evolution_skipped`: a failure inside the evolver, logged and never passed on to the game.
+## `notes`: the agent's memory, one document per note
 
-## `rulebooks`: one snapshot per change of rules.json
+Written by the agent through `memory.py` and nothing else. An Atlas Vector Search index (`db.VECTOR_INDEX`, automated embedding with `db.VECTOR_MODEL`, filter on `run_id`) is defined on `text`: Atlas embeds each note when it is written and embeds the question when the agent searches, so retrieval is raw text in and a plain-language question out. A text index on `text` is the fallback on a server without Atlas Vector Search.
 
 ```
-_id "<run_id>:<version>", run_id, version (1-based), at, action_n, level
-verified, refuted   [{rule, scope, level, note}]
-open_questions      [str]
-added               entries new in this version
-```
-
-## `notes`: the agent's own written memory, one document per text file
-
-The agent keeps prose in `<workspace>/notes/` and code in `<workspace>/scripts/`. Only the prose is pushed: the collector mirrors every text file under `notes/` and keeps it in sync. A changed file updates its document in place (`version` + 1); a deleted file deletes its document. Scripts are never stored; a note refers to a script by filename, extracted into `refs`. Text index on `text` and `path`.
-
-```
-_id        "<run_id>:<path relative to the workspace>"
-run_id, game_id, generation (int|null)
-path       str   always under notes/
-text       str   file content (truncated to 20000 chars)
+_id        "<run_id>:mem/<n>"    n = 1, 2, ... per run; the agent sees it as N<n>
+run_id, game_id
+level      int   the level being played when the note was saved
+path       "mem/<n>"
+title      str   one line
+text       str   the note (truncated to 20000 chars)
 refs       [str] script filenames mentioned in the text
-sha        str   hash of the file bytes, for restart-safe change detection
-version    int   1 on first sight, +1 on every content change
+source     "tool"
+version    int   1 when saved, +1 on every update
+revisions  [{version, text, at}]   the last five earlier wordings
 created_at, updated_at   datetime
 ```
 
-## `lessons`: what the cleared levels of one game taught
+A note is updated in place and deleted outright: `memory.py update` and `memory.py delete`. (The collector also mirrors any text file an agent leaves under `notes/` in its workspace, with `source` absent and `path` starting `notes/`; the doctrine tells the agent not to keep prose in files, and the gateway never edits those.)
 
-Distilled by the harness each time a level is cleared, for use on the later levels of the same game. Text index on `text` and `tags`.
+## Memory bank
 
-```
-_id         "L0001"...   (collection-wide counter)
-run_id, game_id
-level       int   the level after which it was learned
-text        str   concrete about this game; no single level's layout or coordinates
-kind        "mechanic_prior" | "strategy" | "pitfall" | "tooling"
-tags        [str]
-evidence    [{level, rule}]
-created_gen int   generation _id that introduced it
-created_at  datetime
-status      "active" | "retired"
-retired_reason, retired_gen
-revisions   [{gen, level, was}]   earlier wordings, when a later level revised it
-stats       {"recalled": int}     times the agent's memory search returned it
-```
-
-## `generations`: versions of the harness, one lineage per run
-
-```
-_id            int   unique in the collection
-run_id, game_id
-k              int   0 at launch, +1 each time a level is cleared
-level          int|null   the level whose clearing produced this generation (null for k=0)
-parent         int|null   _id of generation k-1 of the same run
-status         "active" | "superseded"   exactly one active per run
-created_at     datetime
-lessons        [str]  lesson ids active for the run when it was created
-addendum       str    the lessons section as written into the workspace CLAUDE.md
-knobs          {"budget_multiple", "max_nudges", "coach_stuck_factor"}
-diff           {"added_lessons", "retired_lessons", "revised_lessons", "knob_changes"}
-rationale      str    the distiller's explanation
-distiller      {"model", "cost_usd", "kind": "claude" | "heuristic", "seconds", "fallback_from"}
-level_metrics  {"level", "actions", "baseline", "efficiency"} | null   the level that produced it
-played         {"level", "actions", "baseline", "efficiency"} | null   the level played under it, filled when cleared
-```
-
-`efficiency` is `min(1, baseline / actions)`, or null when the baseline is unknown.
-
-## Memory banks
-
-The dashboard presents four collections as memory banks (`db.MEMORY_BANKS`): `lessons`, `notes`, `rulebooks` and `generations`. All are plain collections: documents are inserted, updated in place and deleted as the memory changes, and the Memory tab follows them through a change stream.
+The dashboard presents `notes` as the memory bank (`db.MEMORY_BANKS`) and follows it through a change stream. Earlier designs of this project also wrote `rulebooks`, `lessons` and `generations`; nothing writes them now.

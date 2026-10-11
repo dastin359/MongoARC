@@ -1,18 +1,23 @@
-"""Launch one game through the unmodified CCARC driver; the harness evolves per level inside it.
+"""Launch one game through the unmodified CCARC driver, with the agent's memory in MongoDB.
 
-    python -m mongoarc.launch --game G --out-dir D [--agent fake|claude] [--distiller claude|heuristic]
-        [--distill-model M] [--arc-root URL] [--model M] [--effort E] [--timeout S] [--label L]
-        [--pause 0.2] [--no-memory] [--dry-run]
+    python -m mongoarc.launch --game G --out-dir D [--agent fake|claude] [--arc-root URL] [--model M]
+        [--effort E] [--timeout S] [--label L] [--pause 0.2] [--no-memory] [--dry-run]
 
-Every launch is its own lineage: the run starts at generation k=0 with an empty
-memory, and nothing is carried in from any other game or run. Registers the run
-in MongoDB before the game starts, appends the generation's lessons section to
-the workspace CLAUDE.md by wrapping CCARC's build_workspace in process, gives
-the agent `memory.py` and a loopback memory gateway that searches this run
-only, and starts the level evolver (evolve/levels.py), which stores a new
-generation for this run each time a level is cleared. Then it runs the game
-and records how it ended. Nothing under CCARC/ is edited: the agent's prompt
-is changed in the workspace copy only.
+The harness launches, records, serves memory, prompts the agent at level
+boundaries, and shows it all. It does not distil anything: the agent writes its
+own lessons into this run's notes with `memory.py` and searches them back.
+
+A memory run (the default) registers the run in MongoDB and wraps CCARC's
+build_workspace in process: the workspace CLAUDE.md becomes CCARC's preamble
+followed by mongoARC's doctrine (mongoarc/assets/ARC3_DOCTRINE.md) and nothing
+else, the workspace gets `memory.py`, `scripts/` and `scratch/`, CCARC's level
+gate and its own level-cleared message are switched off in the agent's
+environment, and a loopback memory gateway serves this run only. While the game
+runs, a watcher (evolve/levels.py) sends one message at each level boundary.
+Every run starts with an empty memory; nothing crosses between games.
+
+A control run (--no-memory) is plain CCARC: its doctrine, its level gate, its
+announcement, no memory.py. Nothing under CCARC/ is edited either way.
 """
 from __future__ import annotations
 
@@ -31,24 +36,38 @@ from pathlib import Path
 from pymongo.errors import DuplicateKeyError
 
 from mongoarc import db as D
-from mongoarc.evolve import genome
-from mongoarc.evolve.coach import Coach, harness_event
+from mongoarc.evolve.coach import harness_event
 
 REPO = D.REPO
 STUB_CFG = REPO / ".local" / "stub-cfg"
 STUB_CREDENTIAL = '{"claudeAiOauth":{"accessToken":"stub","refreshToken":"stub","expiresAt":4102444800000}}\n'
 MEMORY_TOOL = REPO / "mongoarc" / "agent_tools" / "memory.py"
+# What the agent of a memory run is told: CCARC's doctrine with the memory model changed (prose in MongoDB
+# through memory.py, code in scripts/, throwaway files in scratch/). CCARC's own text is only read, to find it.
+DOCTRINE = REPO / "mongoarc" / "assets" / "ARC3_DOCTRINE.md"
+CCARC_DOCTRINE = REPO / "CCARC" / "src" / "ccarc" / "arc_3" / "assets" / "CCARC3_DOCTRINE.md"
+# Directories the mongoARC doctrine names: code the agent keeps, and throwaway images and dumps.
+MEMORY_RUN_DIRS = ("scripts", "scratch")
 # The agent never holds database credentials (docs/SCHEMA.md): these stay in the harness process.
 HARNESS_ONLY_ENV = ("MONGODB_URI", "MONGO_DB", "MONGOARC_TEST_URI")
 # Never printed, logged or stored; only their presence is reported.
 SECRET_ENV = ("ARC_API_KEY", "ARCPRIZE_API_KEY", "MONGODB_URI", "MONGOARC_CLAUDE_OAUTH_TOKEN",
               "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
-# How long the launcher waits, after the game, for the levels already cleared to be distilled.
-EVOLVER_GRACE_S = 300.0
+# CCARC settings every launch uses (they were the defaults of the retired per-level knobs).
+BUDGET_MULTIPLE = 5.0
+MAX_NUDGES = 2
+# A memory run has no rule book, so CCARC's level gate (the refusal of a new level's first action until
+# `gate.acknowledge(...)`) and CCARC's own level-cleared message (which names that call) are switched off.
+# Both are read with os.environ in the agent's own python processes (gate.LevelGate.check and
+# client._announce_level), whose environment is the workspace env the driver builds: see `child_env`.
+GATE_ENV = ("CCARC3_LEVEL_GATE", "CCARC3_LEVEL_ANNOUNCE")
+# The two places the docstring of the generated workspace session.py mentions the gate: (old, new).
+SESSION_DOC_EDITS = (("    from session import client, gate, arc\n", "    from session import client, arc\n"),
+                     (" The gate holds the first\naction of a new level until you call ``gate.acknowledge(...)``.", ""))
 # Child settings shown as values by --dry-run (none of them is a secret).
 SHOWN_ENV = ("CLAUDE_BINARY", "CLAUDE_CONFIG_DIR", "CCARC3_ARC_ROOT", "CCARC3_LIVE", "CCARC3_NETGUARD",
              "CCARC3_CONFINE", "CCARC3_CREDENTIAL_PROBE", "CCARC3_MAX_NUDGES", "CCARC3_HIDE_BASELINES",
-             "FAKE_POLICY", "FAKE_PAUSE_S", "MONGOARC_RUN_ID", "MONGOARC_MEMORY_URL")
+             "CCARC3_LEVEL_GATE", "CCARC3_LEVEL_ANNOUNCE", "FAKE_POLICY", "FAKE_PAUSE_S", "MONGOARC_RUN_ID", "MONGOARC_MEMORY_URL")
 
 
 def redact(text: str) -> str:
@@ -75,7 +94,7 @@ def _ensure_mock(arc_root: str) -> None:
     time.sleep(1.0)
 
 
-def prepare_env(agent: str, arc_root: str | None, knobs: dict, pause: float) -> None:
+def prepare_env(agent: str, arc_root: str | None, pause: float) -> None:
     """Set the process environment CCARC reads. Must run before `ccarc` is imported."""
     D.load_env()
     e = os.environ
@@ -101,34 +120,111 @@ def prepare_env(agent: str, arc_root: str | None, knobs: dict, pause: float) -> 
         e["FAKE_PAUSE_S"] = str(pause)
     else:
         e["CLAUDE_BINARY"] = str(REPO / "tools" / "claude_login.sh")
-    e.update(genome.launch_settings(knobs)["env"])
+    e["CCARC3_MAX_NUDGES"] = str(MAX_NUDGES)
     src = str(REPO / "CCARC" / "src")
     if src not in sys.path:
         sys.path.insert(0, src)
 
 
-def apply_generation(workspace: Path, gen: dict, addendum: str, memory_tool: bool = False) -> None:
-    """Put the addendum at the end of CLAUDE.md and lay out what it describes: `scripts/` and `memory.py`.
+def swap_doctrine(text: str) -> tuple[str, str]:
+    """A CLAUDE.md as CCARC wrote it, with CCARC's doctrine replaced by mongoARC's.
 
-    If CLAUDE.md already holds a marked lessons section it is replaced in
-    place, so calling this twice never leaves two. Nothing else is copied in:
-    every game starts from a fresh workspace and an empty memory.
+    Returns (text, outcome). CCARC's doctrine is located by its exact text and
+    nothing else: "swapped" if it was there (everything before and after it is
+    returned byte for byte), "already" if mongoARC's doctrine is in place
+    (nothing to do, so calling this twice is the same as once), "not-found" if
+    neither is (a CCARC whose doctrine changed, or one line of it redacted):
+    the text comes back untouched rather than cut at a guessed boundary.
     """
+    ours = DOCTRINE.read_text(encoding="utf-8")
+    theirs = CCARC_DOCTRINE.read_text(encoding="utf-8")   # read as CCARC reads it, so it is the string CCARC wrote
+    if theirs and text.count(theirs) == 1:
+        return text.replace(theirs, ours), "swapped"
+    if ours and ours in text:
+        return text, "already"
+    return text, "not-found"
+
+
+def doctrine_in(text: str) -> str:
+    """Which doctrine a CLAUDE.md holds: "mongoarc", "ccarc" or "unknown"."""
+    for name, path in (("mongoarc", DOCTRINE), ("ccarc", CCARC_DOCTRINE)):
+        try:
+            if path.read_text(encoding="utf-8") in text:
+                return name
+        except OSError:
+            pass
+    return "unknown"
+
+
+def patch_session_doc(text: str) -> tuple[str, str]:
+    """A workspace session.py with the two gate mentions taken out of its docstring.
+
+    Returns (text, outcome): "patched" if both were there (each exactly once, in
+    the docstring; the code below it is returned byte for byte), "already" if the
+    docstring names no gate call, "not-found" otherwise: the text comes back
+    untouched.
+    """
+    end = text.find('"""', 3) if text.startswith('"""') else -1
+    if end < 0:
+        return text, "not-found"
+    doc, code = text[:end], text[end:]
+    if any(doc.count(old) != 1 for old, _ in SESSION_DOC_EDITS):
+        return text, "not-found" if "gate.acknowledge" in doc or "client, gate" in doc else "already"
+    for old, new in SESSION_DOC_EDITS:
+        doc = doc.replace(old, new)
+    return doc + code, "patched"
+
+
+def prepare_workspace(workspace: Path, memory_tool: bool = False) -> None:
+    """Turn the workspace CCARC built into a memory run's: doctrine, session.py docstring, layout, `memory.py`.
+
+    With the memory tool: CCARC's doctrine in CLAUDE.md is replaced by mongoARC's
+    and nothing is added, so the file is CCARC's preamble followed by
+    mongoarc/assets/ARC3_DOCTRINE.md; the docstring of session.py stops naming
+    the gate; `scripts/` and `scratch/` are created and `memory.py` is copied in.
+    Calling it twice is the same as calling it once.
+
+    Without it (a control run) nothing is touched: the workspace is CCARC's.
+    """
+    if not memory_tool:
+        return
     workspace = Path(workspace)
     doc = workspace / "CLAUDE.md"
-    text = doc.read_text(encoding="utf-8")
+    old = doc.read_bytes().decode("utf-8")       # bytes, not text mode: what is not replaced stays byte for byte
     try:
-        text = genome.replace_section(text, addendum)
-    except ValueError:                            # an addendum without markers: plain append
-        text = text.rstrip("\n") + "\n" + addendum
-    doc.write_text(text, encoding="utf-8")
-    (workspace / "scripts").mkdir(exist_ok=True)
-    if memory_tool:
-        shutil.copyfile(MEMORY_TOOL, workspace / "memory.py")
+        text, outcome = swap_doctrine(old)
+    except OSError as exc:
+        text, outcome = old, f"unreadable ({type(exc).__name__}: {exc})"
+    if outcome not in ("swapped", "already"):
+        print(f"    WARNING: the mongoARC doctrine was NOT put into {doc} ({outcome}): CCARC's doctrine was not "
+              f"found in it word for word, so CLAUDE.md is left as CCARC wrote it and still describes "
+              f"rules.json and the level gate instead of memory.py. Compare {CCARC_DOCTRINE} with {DOCTRINE}.",
+              flush=True)
+    if text != old:
+        doc.write_bytes(text.encode("utf-8"))
+    sess = workspace / "session.py"
+    try:
+        src = sess.read_bytes().decode("utf-8")
+    except OSError:
+        src = None
+    if src is not None:
+        new, outcome = patch_session_doc(src)
+        if outcome == "patched":
+            sess.write_bytes(new.encode("utf-8"))
+        elif outcome == "not-found":
+            print(f"    WARNING: the docstring of {sess} still mentions the level gate (CCARC's template changed); "
+                  f"the file is left as CCARC wrote it.", flush=True)
+    for name in MEMORY_RUN_DIRS:
+        (workspace / name).mkdir(exist_ok=True)
+    shutil.copyfile(MEMORY_TOOL, workspace / "memory.py")
 
 
 def child_env(env: dict, run_id: str, memory_url: str | None) -> dict:
-    """Make CCARC's child environment fit for the agent: no database settings, its run id, its memory URL."""
+    """Make CCARC's child environment fit for the agent: no database settings, its run id, its memory URL.
+
+    With a memory URL (a memory run) CCARC's level gate and level-cleared message
+    are off; without one (a control run) both are left at CCARC's default, on.
+    """
     for k in HARNESS_ONLY_ENV:
         env.pop(k, None)
     env["MONGOARC_RUN_ID"] = run_id
@@ -136,6 +232,11 @@ def child_env(env: dict, run_id: str, memory_url: str | None) -> dict:
         env["MONGOARC_MEMORY_URL"] = memory_url
     else:
         env.pop("MONGOARC_MEMORY_URL", None)
+    for k in GATE_ENV:
+        if memory_url:
+            env[k] = "0"
+        else:
+            env.pop(k, None)
     return env
 
 
@@ -190,16 +291,14 @@ def launch(args: argparse.Namespace) -> dict:
     db = D.get_db()
     D.ensure_indexes(db)
     dry = bool(getattr(args, "dry_run", False))
-    if args.role == "control":                    # a control run has no memory tool and no level lessons
+    if args.role == "control":                    # a control run is plain CCARC
         args.no_memory = True
     use_memory = not args.no_memory
     out_dir = Path(args.out_dir).resolve()
     marker_path = out_dir / D.RUN_MARKER
-    # A relaunch into the same attempt directory resumes that run, lineage included.
+    # A relaunch into the same attempt directory resumes that run (and the notes it has saved).
     run_id = args.run_id or _marker_run(marker_path, args.game)
-    earlier = genome.active(db, run_id) if run_id else None
-    knobs = (earlier or {}).get("knobs") or dict(genome.DEFAULT_KNOBS)
-    prepare_env(args.agent, args.arc_root, knobs, args.pause)
+    prepare_env(args.agent, args.arc_root, args.pause)
 
     from ccarc.arc_3 import session as S
     from ccarc.arc_3.client import GameInfo, list_games
@@ -223,32 +322,20 @@ def launch(args: argparse.Namespace) -> dict:
     fields = {"game_id": args.game, "out_dir": str(out_dir), "label": args.label, "agent": args.agent,
               "model": model, "effort": effort, "baseline_actions": baseline or None, "status": "running",
               "started_at": t0, "updated_at": t0, "ended_at": None, "win_levels": len(baseline) or None,
-              "memory_tool": use_memory, "role": args.role or ("train" if use_memory else "control"),
-              "distiller": args.distiller if use_memory else None}
+              "memory_tool": use_memory, "role": args.role or ("train" if use_memory else "control")}
     base_id = f"{args.game}-{t0.strftime('%Y%m%dT%H%M%S')}"
     if dry:
         run_id = run_id or base_id
-        gen = earlier or {**genome.gen0(run_id, args.game, use_memory), "_id": None}
-    else:
-        if run_id:
-            resumed = True
-            keep = () if baseline else ("baseline_actions", "win_levels")   # a failed lookup must not blank them
-            db[D.RUNS].update_one({"_id": run_id}, {"$set": {k: v for k, v in fields.items() if k not in keep},
-                                                    "$setOnInsert": {"n_actions": 0, "result": None, "metrics": None}},
-                                  upsert=True)
-        else:                                     # before the marker, so two launches never share an id
-            run_id = claim_run_id(db, base_id, {**fields, "generation": None, "gen_k": 0, "lessons_used": []})
-        # The run's own lineage: generation 0, empty, unless this is a resume of a run that has evolved.
-        genome.ensure_run_gen0(db, run_id, args.game, use_memory)
-        gen = genome.active(db, run_id)
-    lessons = [l for l in genome.lessons_of(db, gen) if l.get("status") == "active"]
-    lesson_ids = [l["_id"] for l in lessons]
-    if not dry:
-        db[D.RUNS].update_one({"_id": run_id}, {"$set": {"generation": gen["_id"], "gen_k": gen["k"],
-                                                         "lessons_used": lesson_ids}})
-    marker = {"run_id": run_id, "game_id": args.game, "generation": gen["_id"], "lessons_used": lesson_ids,
-              "agent": args.agent, "model": model, "effort": effort, "baseline_actions": baseline or None,
-              "label": args.label}
+    elif run_id:
+        resumed = True
+        keep = () if baseline else ("baseline_actions", "win_levels")   # a failed lookup must not blank them
+        db[D.RUNS].update_one({"_id": run_id}, {"$set": {k: v for k, v in fields.items() if k not in keep},
+                                                "$setOnInsert": {"n_actions": 0, "result": None, "metrics": None}},
+                              upsert=True)
+    else:                                         # before the marker, so two launches never share an id
+        run_id = claim_run_id(db, base_id, fields)
+    marker = {"run_id": run_id, "game_id": args.game, "agent": args.agent, "model": model, "effort": effort,
+              "baseline_actions": baseline or None, "label": args.label}
 
     if lookup_error and not dry:                 # the launch failed before a game existed: mark it and stop
         if not (resumed and marker_path.exists()):
@@ -257,45 +344,54 @@ def launch(args: argparse.Namespace) -> dict:
         db[D.RUNS].update_one({"_id": run_id}, {"$set": {"status": "lost", "ended_at": D.now(),
                                                          "updated_at": D.now(), "result": result}})
         harness_event(db, run_id, "run_ended", f"lost: the game never started ({lookup_error})", status="lost",
-                      error=lookup_error, launch_error=lookup_error, generation=gen["_id"])
-        out = {"run_id": run_id, "generation": gen["_id"], "gen_k": gen["k"], "status": "lost",
-               "lessons_used": lesson_ids, "out_dir": str(out_dir), "result": result}
+                      error=lookup_error, launch_error=lookup_error)
+        out = {"run_id": run_id, "status": "lost", "out_dir": str(out_dir), "result": result}
         print(json.dumps(out, indent=2), flush=True)
         return out
 
+    if use_memory and not dry:                    # one look, never a wait: the index builds while the game runs
+        try:
+            vector = D.ensure_vector_index(db)
+        except Exception as exc:  # noqa: BLE001 -- a game is never held up or failed by the search index
+            vector = f"unknown ({type(exc).__name__})"
+        print(f"    memory: vector index {vector}"
+              + (" (no Atlas Vector Search on this server; memory search uses the text index)"
+                 if vector == "unsupported" else ""), flush=True)
+
     memory, memory_url = start_memory() if use_memory else (None, None)
-    addendum = genome.render_addendum(gen, lessons, memory=memory is not None)
-    if not dry and addendum != gen.get("addendum"):   # the stored section is the one the agent is given
-        db[D.GENERATIONS].update_one({"_id": gen["_id"]}, {"$set": {"addendum": addendum}})
+    memory_on = memory is not None                # without a gateway the run is plain CCARC, gate included
+    for k in GATE_ENV:                            # the driver's own environment agrees with the child's
+        if memory_on:
+            os.environ[k] = "0"
+        else:
+            os.environ.pop(k, None)
 
     original = S.build_workspace
 
     def build_workspace(config, info=None, **kw):
         ws = original(config, info, **kw)
-        # Read at call time: if CCARC rebuilds the workspace mid-game, it gets the lessons as they stand then.
-        now_gen = (genome.active(db, run_id) if not dry else None) or gen
-        apply_generation(ws.root, now_gen, now_gen.get("addendum") if now_gen is not gen else addendum,
-                         memory_tool=memory is not None)
+        prepare_workspace(ws.root, memory_tool=memory_on)
         child_env(ws.env, run_id, memory_url)
         return ws
 
-    settings = genome.launch_settings(gen.get("knobs"))
     config = S.Ccarc3Config(game_id=args.game, out_dir=out_dir, model=args.model or S.DEFAULT_MODEL,
-                            effort=args.effort or S.DEFAULT_EFFORT,
-                            budget_multiple=settings["budget_multiple"],
+                            effort=args.effort or S.DEFAULT_EFFORT, budget_multiple=BUDGET_MULTIPLE,
                             wall_clock_timeout_s=float(args.timeout), clock_is_infrastructure=False)
 
     if dry:
-        report = {"dry_run": True, "run_id": run_id, "game_id": args.game, "generation": gen["_id"],
-                  "gen_k": gen["k"], "lessons_used": lesson_ids, "agent": args.agent, "model": model,
+        report = {"dry_run": True, "run_id": run_id, "game_id": args.game, "agent": args.agent, "model": model,
                   "effort": effort, "out_dir": str(out_dir), "baseline_levels": len(baseline),
-                  "game_lookup": lookup_error or "ok", "memory_tool": memory is not None,
-                  "level_evolver": use_memory, "distiller": args.distiller if use_memory else None,
-                  "knobs": settings}
+                  "game_lookup": lookup_error or "ok", "memory_tool": memory_on,
+                  "level_gate": "off" if memory_on else "on", "level_messages": memory_on,
+                  "budget_multiple": BUDGET_MULTIPLE}
         try:
             ws = build_workspace(config, info or GameInfo(game_id=args.game))
+            prompt = (ws.root / "CLAUDE.md").read_bytes().decode("utf-8")
             report["claude_md"] = str(ws.root / "CLAUDE.md")
-            report["addendum_in_claude_md"] = (ws.root / "CLAUDE.md").read_text(encoding="utf-8").endswith(addendum)
+            report["claude_md_lines"] = len(prompt.splitlines())
+            report["doctrine"] = doctrine_in(prompt)
+            report["nothing_after_doctrine"] = prompt.endswith(
+                (DOCTRINE if memory_on else CCARC_DOCTRINE).read_text(encoding="utf-8"))
             report["cli"] = [a if len(a) <= 120 else a[:117] + "..." for a in S.build_cli_args(ws)]
             report["child_env"] = {k: ws.env.get(k) for k in SHOWN_ENV}
             report["child_env_present"] = {k: k in ws.env for k in SECRET_ENV + HARNESS_ONLY_ENV}
@@ -305,30 +401,23 @@ def launch(args: argparse.Namespace) -> dict:
         print(redact(json.dumps(report, indent=2)), flush=True)
         return {"status": "dry-run", **report}
 
-    coach, evolver, collector, error, result = None, None, None, None, None
+    watcher, collector, error, result = None, None, None, None
     try:                                          # from here on the run exists: whatever happens, it gets an ending
         _write_marker(marker_path, marker)
         harness_event(db, run_id, "run_started",
-                      f"{args.game} {'resumed' if resumed else 'launched'} at harness generation k={gen['k']} "
-                      f"({len(lesson_ids)} lessons, agent {args.agent}, "
-                      + (f"level evolver: {args.distiller} distiller)" if use_memory
-                         else "control: no memory tool, no level lessons)"),
-                      knobs=gen.get("knobs"), generation=gen["_id"], k=gen["k"])
-        if lessons:                               # a resumed run: its lessons are in the rebuilt CLAUDE.md
-            harness_event(db, run_id, "lessons_injected",
-                          "\n".join(f"{l['_id']} [{l['kind']}] {l['text']}" for l in lessons), lesson_ids,
-                          generation=gen["_id"], k=gen["k"],
-                          items=[{"id": l["_id"], "kind": l["kind"], "text": l["text"]} for l in lessons])
+                      f"{args.game} {'resumed' if resumed else 'launched'} (agent {args.agent}, "
+                      + ("memory run: the agent keeps its own notes through memory.py; no level gate)" if memory_on
+                         else "control: plain CCARC, no memory tool)"), memory_tool=memory_on)
         S.build_workspace = build_workspace      # run_game resolves the name at call time
-        coach = Coach(db, run_id, out_dir, workspace, baseline, settings["coach_stuck_factor"],
-                      interval=args.coach_interval)
         collector = _start_collector(db, out_dir) if args.collect else None
-        coach.start()
-        if use_memory:
-            from mongoarc.evolve.levels import LevelEvolver
-            evolver = LevelEvolver(db, run_id, args.game, out_dir, workspace, baseline, kind=args.distiller,
-                                   model=args.distill_model, memory=memory is not None)
-            evolver.start()
+        if memory_on:
+            try:
+                from mongoarc.evolve.levels import LevelWatcher
+                watcher = LevelWatcher(db, run_id, out_dir, workspace, baseline)
+                watcher.start()
+            except Exception as exc:  # noqa: BLE001 -- the level messages must never cost a game
+                watcher = None
+                print(f"    level watcher not started ({type(exc).__name__}: {exc})", flush=True)
         result = S.run_game(config, info)
     except BaseException as exc:  # noqa: BLE001 -- the run document must not be left "running"
         error = exc
@@ -336,14 +425,11 @@ def launch(args: argparse.Namespace) -> dict:
     finally:
         _ignore_signals()                         # a second Ctrl-C must not cut the ending short
         S.build_workspace = original
-        if coach is not None:
-            coach.stop()
-        if evolver is not None:                   # finishes the levels already cleared, the last one included
+        if watcher is not None:
             try:
-                if not evolver.stop(timeout=EVOLVER_GRACE_S):
-                    print("    evolver: still distilling after the grace period; left behind", flush=True)
+                watcher.stop()
             except Exception as exc:  # noqa: BLE001
-                print(f"    evolver: {type(exc).__name__}: {exc}", flush=True)
+                print(f"    level watcher: {type(exc).__name__}: {exc}", flush=True)
         if memory is not None:
             memory.shutdown()
 
@@ -374,9 +460,8 @@ def launch(args: argparse.Namespace) -> dict:
     if collector is not None:
         collector[0].set()                        # run_forever makes one final pass after the stop
         collector[1].join(timeout=30)
-    last = genome.active(db, run_id) or gen
-    out = {"run_id": run_id, "generation": last["_id"], "gen_k": last.get("k"), "status": status,
-           "lessons_used": last.get("lessons") or [], "out_dir": str(out_dir), "result": D.jsonable(stored)}
+    out = {"run_id": run_id, "status": status, "memory_tool": memory_on, "out_dir": str(out_dir),
+           "result": D.jsonable(stored)}
     print(json.dumps(out, indent=2), flush=True)
     if error is not None and not isinstance(error, Exception):
         raise error                               # KeyboardInterrupt / SystemExit
@@ -403,11 +488,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--game", required=True)
     p.add_argument("--out-dir", required=True, help="attempt directory (one game per directory)")
     p.add_argument("--gen", type=int, default=None,
-                   help="ignored: every launch starts its own lineage at generation k=0")
+                   help="ignored (there are no harness generations any more)")
     p.add_argument("--distiller", choices=("claude", "heuristic"), default="claude",
-                   help="what turns a cleared level into lessons: one CLI call, or no model")
+                   help="ignored: the harness no longer distils lessons, the agent writes its own")
     p.add_argument("--distill-model", default=None,
-                   help="model for --distiller claude (default $MONGOARC_DISTILL_MODEL or claude-sonnet-5-5)")
+                   help="ignored, like --distiller")
     p.add_argument("--agent", choices=("fake", "claude"), default="claude")
     p.add_argument("--arc-root", default=None, help="ARC API root; unset means the real service")
     p.add_argument("--model", default=None)
@@ -416,14 +501,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--label", default=None)
     p.add_argument("--pause", type=float, default=0.2, help="fake agent: seconds between actions")
     p.add_argument("--run-id", default=None)
-    p.add_argument("--coach-interval", type=float, default=1.0)
+    p.add_argument("--coach-interval", type=float, default=1.0, help="ignored: there is no mid-game coach")
     p.add_argument("--collect", action="store_true", help="also run the collector in this process")
     p.add_argument("--role", choices=("train", "validation", "control"), default=None,
-                   help="train: the harness evolves per level (default). control: the baseline arm, implies "
-                        "--no-memory. validation is accepted for old callers and behaves as train.")
+                   help="train: a memory run (default). control: the baseline arm, implies --no-memory. "
+                        "validation is accepted for old callers and behaves as train.")
     p.add_argument("--no-memory", action="store_true",
-                   help="control arm: no memory.py, no memory section in the prompt, no level evolver "
-                        "(the run stays at generation k=0)")
+                   help="control arm: plain CCARC (its doctrine, its level gate and level-cleared message, "
+                        "no memory.py, no level-boundary messages from the harness)")
     p.add_argument("--dry-run", action="store_true",
                    help="build the workspace and print what the agent would be given (prompt path, child "
                         "environment with secrets shown as present/absent); no game, nothing written to MongoDB")

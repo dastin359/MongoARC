@@ -16,10 +16,10 @@
 </head>
 <body>
 <header class="top">
-  <div class="brand">mongo<b>ARC</b><span>self-improving harness for ARC-AGI-3</span></div>
+  <div class="brand">mongo<b>ARC</b><span>an agent with a MongoDB memory, playing ARC-AGI-3</span></div>
   <nav class="tabs" id="tabs">
     <button data-tab="live">LIVE PLAY</button>
-    <button data-tab="evolution">EVOLUTION</button>
+    <button data-tab="levels">LEVELS</button>
     <button data-tab="memory">MEMORY</button>
   </nav>
   <div class="grow"></div>
@@ -37,7 +37,7 @@
       <span class="game" id="gameId">no run</span>
       <span class="chip" id="statusChip"></span>
       <span class="chip gen" id="genChip"></span>
-      <span class="chip ctl" id="roleChip" title="Control run: launched with --no-memory. No memory tool, no level lessons, generation 0 throughout."></span>
+      <span class="chip ctl" id="roleChip" title="Control run: launched with --no-memory. It has no memory tool."></span>
       <span class="grow"></span>
       <div class="tapeslot" id="ctlTape" title="The agent's most recent actions, newest on the right"></div>
       <span class="lastact" id="lastAct" hidden></span>
@@ -79,14 +79,13 @@
       <div id="levelBars"></div>
     </div>
     <div class="panel rules">
-      <h2>RULE BOOK <em id="rbVersion"></em></h2>
+      <h2><span id="rbTitle">MEMORY NOTES</span> <em id="rbVersion"></em></h2>
       <div class="scroll" id="rulebook"></div>
     </div>
-    <div class="panel membanks">
-      <h2>MEMORY IN MONGODB <em id="memBanksInfo">click a bank to open its documents</em></h2>
-      <div class="mbgrid" id="memBanks"></div>
-      <h2 class="sub">THIS RUN'S NOTES <em id="memNotesInfo"></em></h2>
-      <div class="scroll" id="memNotes"></div>
+    <div class="panel membanks" id="memPanel" title="Open the MEMORY tab on this run's notes">
+      <h2>MEMORY IN MONGODB <em id="memBanksInfo"></em></h2>
+      <div class="memsum"><b id="memCount">-</b><span>notes for this run</span><i>last 5 memory events</i></div>
+      <div id="memEvents"></div>
     </div>
   </section>
 
@@ -96,22 +95,22 @@
   </section>
 </main>
 
-<main id="tab-evolution" class="evo" hidden>
+<main id="tab-levels" class="evo" hidden>
   <section class="panel gens">
-    <h2>HOW THE HARNESS CHANGED DURING THIS GAME <em>one generation per cleared level, newest first</em></h2>
+    <h2>MEMORY ACTIVITY <em>what the agent wrote and searched, newest first, by level</em></h2>
     <div class="evoscope" id="evoScope"></div>
-    <div class="scroll" id="genList"></div>
+    <div class="scroll" id="actList"></div>
   </section>
   <section class="evoright">
     <div class="tiles" id="tiles"></div>
     <div class="panel chartp">
-      <h2>ACTIONS PER LEVEL OF THIS GAME <em>actions spent / human baseline for that level; lower is better. Nothing is carried in from another game.</em></h2>
+      <h2>LEVEL BY LEVEL: WHAT THE AGENT SPENT AND WHAT IT WROTE TO MEMORY <em>actions / human baseline per level; lower is better</em></h2>
       <div class="legend" id="chartLegend"></div>
       <div class="chart" id="chart"></div>
     </div>
-    <div class="panel lessonsp">
-      <h2>LESSONS LEARNED IN THIS GAME <em id="lessonInfo"></em></h2>
-      <div class="scroll" id="lessons"></div>
+    <div class="panel notesp">
+      <h2>NOTES IN MEMORY FOR THIS GAME <em id="noteInfo"></em></h2>
+      <div class="scroll" id="noteTable"></div>
     </div>
   </section>
 </main>

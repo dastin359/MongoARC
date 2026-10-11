@@ -27,7 +27,12 @@ NOTES = "notes"
 
 # The memory banks a viewer can open: what the harness remembers, as opposed to
 # the raw record of play (actions, events).
-MEMORY_BANKS = [LESSONS, NOTES, RULEBOOKS, GENERATIONS]
+MEMORY_BANKS = [NOTES]
+
+# Atlas Vector Search index on the notes: Atlas embeds each note's text itself (automated
+# embedding) and embeds the query too, so memory search is raw text in, plain-language question out.
+VECTOR_INDEX = "notes_semantic"
+VECTOR_MODEL = "voyage-4"
 
 # ARC-AGI-3 palette, index 0..15. Index 5 is the background.
 PALETTE = ["#FFFFFF", "#CCCCCC", "#999999", "#666666", "#333333", "#000000", "#E53AA3", "#FF7BCC",
@@ -130,3 +135,34 @@ def next_seq(db: Database, run_id: str, count: int = 1) -> int:
         {"_id": run_id}, {"$inc": {"last_seq": count}}, upsert=True, return_document=True,
         projection={"last_seq": 1})
     return int(doc["last_seq"]) - count + 1
+
+
+def ensure_vector_index(db: Database, wait_s: float = 0.0) -> str:
+    """Create the notes' automated-embedding vector index if it is missing. Returns its status.
+
+    'ready' once Atlas reports it queryable, 'building' while it is not, and
+    'unsupported' on a server without Atlas Vector Search (a plain local mongod),
+    where memory search falls back to the text index.
+    """
+    import time
+    from pymongo.errors import PyMongoError
+    from pymongo.operations import SearchIndexModel
+    coll = db[NOTES]
+    try:
+        if NOTES not in db.list_collection_names():
+            db.create_collection(NOTES)
+        have = {i["name"]: i for i in coll.list_search_indexes()}
+        if VECTOR_INDEX not in have:
+            coll.create_search_index(SearchIndexModel(name=VECTOR_INDEX, type="vectorSearch", definition={"fields": [
+                {"type": "autoEmbed", "modality": "text", "path": "text", "model": VECTOR_MODEL},
+                {"type": "filter", "path": "run_id"}]}))
+        deadline = time.time() + wait_s
+        while True:
+            idx = next((i for i in coll.list_search_indexes() if i["name"] == VECTOR_INDEX), {})
+            if idx.get("queryable"):
+                return "ready"
+            if time.time() >= deadline:
+                return "building"
+            time.sleep(3)
+    except PyMongoError:
+        return "unsupported"
