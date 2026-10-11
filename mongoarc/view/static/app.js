@@ -335,6 +335,7 @@ async function refreshEvolution() {
 }
 let tickN = 0;
 async function tick() {
+  pollMemory();
   const n = tickN++;
   if (n % 6 === 0 || !S.runId) await refreshRuns();
   if (n % 10 === 0) await refreshEvolution();
@@ -486,23 +487,48 @@ function lessonRow(id) {
   d.append(el('span', 'kind', l.kind || 'lesson'), l.text || '');
   return d;
 }
-function renderHarness() {
-  const r = S.run, g = r && S.gens.find((x) => x._id === r.generation);
-  if (!once('harness', [S.runId, r && r.generation, r && r.lessons_used, g && g.status, S.evoPending, S.lessons.map((l) => l._id + l.status + (l.text || '').length)])) return;
-  const box = $('#harness');
-  box.replaceChildren();
-  if (!r) return void box.append(el('div', 'none', 'No run selected.'));
-  if (!Number.isInteger(r.generation)) {
-    return void box.append(el('div', 'none', 'No generation recorded: this run was launched outside the evolution loop.'));
-  }
-  const used = r.lessons_used || [], head = el('div', 'hgen');
-  head.append(el('span', 'g', 'GEN ' + r.generation));
-  if (g) head.append(el('span', 'chip ' + g.status, g.status));
-  const knobs = g && g.knobs ? Object.entries(g.knobs).map(([k, v]) => `${k} ${v}`).join(' · ') : '';
-  head.append(el('span', 'k', `${used.length} lesson${used.length === 1 ? '' : 's'} carried` + (knobs ? ' · ' + knobs : '')));
-  box.append(head);
-  if (!used.length) box.append(el('div', 'none', r.generation === 0 ? 'Generation 0 is the bare harness: it carries no lessons.' : 'No lessons were injected into this run.'));
-  for (const id of used) box.append(lessonRow(id));
+function renderHarness() {}  // the panel it filled was replaced by the memory panel below
+
+/* ---------- memory panel: the banks, live, and what this run has written ---------- */
+const MB = { banks: [], counts: {}, notes: [], at: 0, busy: false };
+async function pollMemory() {
+  if (MB.busy || S.tab !== 'live' || Date.now() - MB.at < 1500) return;
+  MB.busy = true; MB.at = Date.now();
+  try {
+    const banks = await api('/api/memory/banks');
+    const notes = S.runId ? await api(`/api/memory/notes?run_id=${enc(S.runId)}&limit=20`) : [];
+    const box = $('#memBanks');
+    if (!box.children.length || banks.length !== MB.banks.length) {
+      box.replaceChildren(...banks.map((bk) => {
+        const row = el('button', 'mb mb-' + bk.name);
+        row.append(el('b', null, String(bk.count)), el('span', null, { rulebooks: 'rule books', generations: 'harness gens' }[bk.name] || bk.name));
+        row.title = bk.description || '';
+        row.onclick = () => { setTab('memory'); if (window.MemoryTab) { MemoryTab.setRun(''); MemoryTab.open(bk.name); } };
+        return row;
+      }));
+    }
+    banks.forEach((bk, i) => {
+      const row = box.children[i], n = row.firstChild;
+      if (MB.counts[bk.name] !== undefined && MB.counts[bk.name] !== bk.count) { row.classList.remove('pulse'); void row.offsetWidth; row.classList.add('pulse'); }
+      MB.counts[bk.name] = bk.count; n.textContent = String(bk.count);
+    });
+    MB.banks = banks;
+    const sig = JSON.stringify(notes.map((x) => [x._id, x.version]));
+    if (sig !== MB.sig) {
+      MB.sig = sig;
+      const nb = $('#memNotes');
+      $('#memNotesInfo').textContent = notes.length ? `${notes.length} document${notes.length === 1 ? '' : 's'} in db.notes` : '';
+      nb.replaceChildren();
+      if (!notes.length) nb.append(el('div', 'none', S.runId ? 'Nothing written yet. Prose the agent saves under notes/ appears here as a MongoDB document, and is updated or deleted with the file.' : 'No run selected.'));
+      for (const x of notes) {
+        const d = el('div', 'mnote'), h = el('div', 'mh');
+        h.append(el('b', null, x.path), el('span', null, 'v' + x.version));
+        d.append(h, el('pre', null, x.text || ''));
+        d.onclick = () => { setTab('memory'); if (window.MemoryTab) { MemoryTab.open('notes'); MemoryTab.setRun(S.runId); } };
+        nb.append(d);
+      }
+    }
+  } catch (e) { /* the next poll retries */ } finally { MB.busy = false; }
 }
 
 /* ---------- feed ---------- */
