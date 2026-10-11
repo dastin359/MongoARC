@@ -457,7 +457,7 @@ function renderMode() {
   const running = r && r.status === 'running', backlog = S.loadedTo - S.pos;
   $('#liveBar').classList.toggle('idle', !running);
   $('#liveInfo').textContent = !r ? 'waiting for a run'
-    : running ? `action ${Math.max(0, S.loadedTo)}` + (backlog > 3 ? `, catching up (${backlog} queued)` : ', caught up')
+    : running ? `action ${Math.max(0, S.loadedTo)}` + (backlog > 3 ? ` · board is ${backlog} moves behind, playing them now` : " · waiting for the agent's next move")
     : `run ${r.status}: final board shown. Switch to REPLAY to scrub.`;
 }
 function renderPicker() {
