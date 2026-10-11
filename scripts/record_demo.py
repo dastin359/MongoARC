@@ -45,12 +45,12 @@ SPEEDS = [1, 2, 4, 8, 16]
 FINISHED = ("won", "finished", "lost", "stopped")
 
 CAPTIONS = {
-    "title": "mongoARC: a harness that rewrites itself between levels",
-    "replay": "A Claude agent plays a real ARC-AGI-3 game. Every move, frame and thought is recorded in MongoDB Atlas.",
+    "title": "mongoARC: an agent with a MongoDB memory, playing ARC-AGI-3",
+    "replay": "A Claude agent plays a real ARC-AGI-3 game. After each level it saves what it learned to MongoDB Atlas, and searches it before the next.",
     "live": "The pad shows the button it pressed; a crosshair shows the pixel it clicked.",
-    "memory": "Its memory lives in MongoDB: the notes it writes, the rules it verified, the lessons from each level it cleared.",
-    "evo": "After every level the harness rewrites itself: a new generation, with the reason and the evidence.",
-    "evo2": "The hard metric: actions spent on each level against the human baseline.",
+    "memory": "Its memory is documents in MongoDB, written in its own words. Atlas Vector Search embeds each note and each question itself.",
+    "evo": "Level by level: what the agent saved and what it searched for, straight from the database.",
+    "evo2": "The hard metric: actions spent on each level against the human baseline, beside a no-memory control run.",
 }
 # Seconds of a 60 s video; scaled to --seconds.
 WEIGHTS = {"title": 2, "replay": 16, "live": 8, "memory": 16, "evo": 18}

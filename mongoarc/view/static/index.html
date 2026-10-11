@@ -63,29 +63,34 @@
         </div>
       </div>
     </div>
+    <div class="statsrow">
+      <div class="panel hud">
+        <div class="big">
+          <div><div class="num" id="hudLevel">-</div><div class="lbl">LEVELS CLEARED</div></div>
+          <div><div class="num" id="hudActions">-</div><div class="lbl">ACTIONS USED</div></div>
+          <div><div class="num sm" id="hudDeaths">-</div><div class="lbl">DEATHS</div></div>
+        </div>
+        <div class="lvchips" id="levelChips"></div>
+      </div>
+      <div class="panel levels">
+        <h2>ACTIONS PER LEVEL <em>vs human baseline</em></h2>
+        <div id="levelBars"></div>
+      </div>
+    </div>
   </section>
 
   <section class="side">
-    <div class="panel hud">
-      <div class="big">
-        <div><div class="num" id="hudLevel">-</div><div class="lbl">LEVELS CLEARED</div></div>
-        <div><div class="num" id="hudActions">-</div><div class="lbl">ACTIONS USED</div></div>
-        <div><div class="num sm" id="hudDeaths">-</div><div class="lbl">DEATHS</div></div>
+    <div class="panel membanks" id="memPanel">
+      <h2>MEMORY IN MONGODB ATLAS <em id="memBanksInfo"></em></h2>
+      <div class="memsum" id="memSum" title="Open the MEMORY tab on this run's notes">
+        <span><b id="memCount">-</b>notes</span><span><b id="memSaved">-</b>saved</span><span><b id="memUpdated">-</b>updated</span><span><b id="memDeleted">-</b>deleted</span><span class="s"><b id="memSearched">-</b>searches</span>
       </div>
-      <div class="lvchips" id="levelChips"></div>
-    </div>
-    <div class="panel levels">
-      <h2>ACTIONS PER LEVEL <em>vs human baseline</em></h2>
-      <div id="levelBars"></div>
+      <div class="memtag">Every write and every search this agent made. Search is Atlas Vector Search with automated embedding: raw text in, plain-language question out.</div>
+      <div class="scroll" id="memEvents"></div>
     </div>
     <div class="panel rules">
       <h2><span id="rbTitle">MEMORY NOTES</span> <em id="rbVersion"></em></h2>
       <div class="scroll" id="rulebook"></div>
-    </div>
-    <div class="panel membanks" id="memPanel" title="Open the MEMORY tab on this run's notes">
-      <h2>MEMORY IN MONGODB <em id="memBanksInfo"></em></h2>
-      <div class="memsum"><b id="memCount">-</b><span>notes for this run</span><i>last 5 memory events</i></div>
-      <div id="memEvents"></div>
     </div>
   </section>
 

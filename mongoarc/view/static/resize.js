@@ -149,7 +149,48 @@
     var mo = new MutationObserver(function () { if (tryAttach()) mo.disconnect(); });
     mo.observe(host, { childList: true, subtree: true });
   }
-  window.ColResize = { attach: attach, setScale: setScale, scale: zf, init: function () { scaleControl(); live(); evolution(); memory(); } };
+  /* A horizontal divider between two stacked panels: drag to give one more height, double-click to reset. */
+  function attachRow(top, bottom, key, minPx) {
+    if (!top || !bottom || top.dataset.rowsplit) return;
+    top.dataset.rowsplit = '1';
+    minPx = minPx || 110;
+    var h = document.createElement('div');
+    h.className = 'rowsplit'; h.title = 'Drag to resize. Double-click to reset.';
+    h.setAttribute('role', 'separator'); h.setAttribute('aria-orientation', 'horizontal');
+    top.after(h);
+    var size = saved[key] && saved[key][0] ? saved[key][0] : null, startY = 0, start = 0;
+    function apply() {
+      if (size == null) { top.style.flex = ''; bottom.style.flex = ''; return; }
+      top.style.flex = '0 0 ' + size + 'px'; bottom.style.flex = '1 1 0';
+    }
+    h.addEventListener('pointerdown', function (e) {
+      if (e.button) return;
+      e.preventDefault();
+      start = top.getBoundingClientRect().height / zf(); startY = e.clientY;
+      try { h.setPointerCapture(e.pointerId); } catch (x) { /* synthetic event */ }
+      h.classList.add('drag'); document.body.classList.add('rowresizing');
+    });
+    h.addEventListener('pointermove', function (e) {
+      if (!h.classList.contains('drag')) return;
+      var room = (top.getBoundingClientRect().height + bottom.getBoundingClientRect().height) / zf();
+      size = Math.round(Math.max(minPx, Math.min(room - minPx, start + (e.clientY - startY) / zf())));
+      apply();
+    });
+    function end(e) {
+      if (!h.classList.contains('drag')) return;
+      h.classList.remove('drag'); document.body.classList.remove('rowresizing');
+      try { h.releasePointerCapture(e.pointerId); } catch (x) { /* already released */ }
+      saved[key] = [size]; save(saved);
+    }
+    h.addEventListener('pointerup', end); h.addEventListener('pointercancel', end);
+    h.addEventListener('dblclick', function () { size = null; delete saved[key]; save(saved); apply(); });
+    apply();
+  }
+  function liveRows() {
+    var side = document.querySelector('#tab-live .side');
+    if (side) attachRow(side.querySelector('.membanks'), side.querySelector('.rules'), 'live.memory');
+  }
+  window.ColResize = { attach: attach, attachRow: attachRow, setScale: setScale, scale: zf, init: function () { scaleControl(); live(); liveRows(); evolution(); memory(); } };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', window.ColResize.init);
   else window.ColResize.init();
 })();

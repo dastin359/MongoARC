@@ -210,6 +210,11 @@ async function loadHistory(ep, id, upto) {
 function ingestEvents(list) {
   for (const e of list) {
     if (!(e.seq > S.lastSeq)) continue;
+    // The level-boundary message is recorded three times (the harness's own event, the outbox line, and the
+    // session's echo of it as a user message). Show it once, as the harness event.
+    const echo = (e.kind === 'outbox' && e.outbox_kind === 'note')
+      || (e.kind === 'user_msg' && /cleared\. You are on level/.test(e.text || '') && /memory\.py/.test(e.text || ''));
+    if (echo) { S.lastSeq = e.seq; continue; }
     const tail = S.events.length ? S.events[S.events.length - 1]._n : -1;
     e._n = Number.isInteger(e.action_n) ? Math.max(tail, e.action_n) : tail;  // keep the feed monotonic
     S.events.push(e); S.lastSeq = e.seq;
@@ -508,22 +513,39 @@ function syncRulebook() {
 }
 function renderMemory() {
   const mine = !!S.runId && S.evoFor === S.runId, notes = runNotes();
-  const evs = mine ? S.evoEvents.filter((e) => e.kind === 'memory_write' || e.kind === 'recall') : [];
+  const evs = mine ? S.evoEvents.filter((e) => e.kind === 'memory_write' || (e.kind === 'recall' && e.op !== 'list')) : [];
   if (!once('mempanel', [S.runId, mine, notes.length, evs.length, evs.length ? evs[evs.length - 1].seq : 0, isControl(S.run)])) return;
+  const n = (op) => evs.filter((e) => e.kind === 'memory_write' && e.op === op).length;
   $('#memCount').textContent = mine ? String(notes.length) : '-';
-  $('#memBanksInfo').textContent = S.runId ? 'click to open in the MEMORY tab' : '';
+  $('#memSaved').textContent = mine ? String(n('save')) : '-';
+  $('#memUpdated').textContent = mine ? String(n('update')) : '-';
+  $('#memDeleted').textContent = mine ? String(n('delete')) : '-';
+  $('#memSearched').textContent = mine ? String(evs.filter((e) => e.kind === 'recall').length) : '-';
+  $('#memBanksInfo').textContent = evs.length ? `all ${evs.length} memory events of this game, newest first` : '';
   const box = $('#memEvents');
   box.replaceChildren();
   if (!evs.length) {
     return void box.append(el('div', 'none', !S.runId ? 'No run selected.' : isControl(S.run) ? 'A control run has no memory.'
       : !mine ? 'Loading.' : 'Nothing saved or searched yet.'));
   }
-  for (const e of evs.slice(-5).reverse()) {  // the last five, newest first
+  for (const e of evs.slice().reverse()) {  // every one, newest first
     const search = e.kind === 'recall', row = el('div', 'mev ' + (search ? 'search' : e.op || ''));
-    row.append(el('b', null, search ? 'SEARCHED' : MEM_OPS[e.op] || 'WROTE'), el('span', 'lv', Number.isInteger(e.level) ? 'L' + e.level : ''),
-      el('span', 'txt', search ? e.query || '' : [e.note ? noteShort(e.note) : '', e.title || ''].filter(Boolean).join('  ')));
+    const head = el('div', 'mh');
+    head.append(el('b', null, search ? 'SEARCHED' : MEM_OPS[e.op] || 'WROTE'), el('span', 'lv', Number.isInteger(e.level) ? 'level ' + e.level : ''));
+    if (search) {
+      const ids = e.notes || [];
+      head.append(el('span', 'txt', e.query ? '“' + e.query + '”' : '(no question)'));
+      row.append(head, el('div', 'sub', (ids.length ? `→ ${ids.length} note${ids.length === 1 ? '' : 's'} returned:  ${ids.map(noteShort).join('  ')}` : '→ no note returned'
+        + (Number.isInteger(e.stored) ? ` (${e.stored} stored)` : '')) + (e.engine === 'atlas_vector_search' ? '   ·   Atlas Vector Search' : e.engine === 'text' ? '   ·   text index' : '')));
+    } else {
+      head.append(el('span', 'txt', [e.note ? noteShort(e.note) : '', e.title || ''].filter(Boolean).join('  ')));
+      const body = String(e.text || '').replace(/^agent (saved|updated|deleted) note [^"]*"[^"]*"(?: \(version \d+\))?:\s*/, '');
+      row.append(head, el('div', 'sub', body));
+    }
+    row.onclick = openMemoryTab;
     box.append(row);
   }
+  box.scrollTop = 0;
 }
 
 /* The rule book of a run recorded under the earlier design. */

@@ -86,6 +86,17 @@ python -m mongoarc.launch --game mk01-toy --out-dir runs/demo-fake --agent fake 
 
 Semantic search needs Atlas. On a plain local `mongod`, `recall` falls back to the text index.
 
+## Result from the hackathon run
+
+One real ARC-AGI-3 game, CD82 (6 levels), played by Claude Opus 5.5 with this memory, against one earlier run of the same game by the same model with plain CCARC and no memory tool. One run each, so the comparison shows nothing about efficiency; it is here to show the mechanism working on the real benchmark.
+
+| | Result | Actions per level (human baseline 55, 8, 41, 21, 23, 23) | Total |
+|---|---|---|---|
+| With MongoDB memory | won 6/6 | 14, 6, 18, 14, 13, 16 | 81 |
+| Control, no memory | won 6/6 | 18, 6, 16, 16, 13, 16 | 85 |
+
+In the memory run the agent saved 7 notes (one after every level, plus a note of the game's rules), and searched its memory 5 times, on 4 of the 6 levels. Each search after the first went through Atlas Vector Search and returned the notes it had saved on earlier levels. No note was updated or deleted in this game.
+
 ## What is new here and what is not
 
 - **Not new:** [CCARC](https://github.com/dastin359/CCARC), the driver that runs Claude Code against the ARC-AGI-3 API. It is included as an unmodified git submodule and is prior work. MongoARC wraps it from the outside; no file in it is changed. The doctrine MongoARC gives the agent is derived from CCARC's.

@@ -11,3 +11,9 @@ body { zoom: var(--ui, 1); }  /* percentages already resolve inside the zoomed b
 .uiscale button { border: 0; border-radius: 0; padding: 4px 9px; font: 700 12px var(--mono, monospace); background: transparent; color: var(--ink2, #9aa3ae); }
 .uiscale button:hover { background: rgba(255,255,255,.08); color: #fff; }
 .uiscale span { font: 700 11px var(--mono, monospace); color: var(--ink2, #9aa3ae); padding: 0 6px; min-width: 44px; text-align: center; cursor: default; }
+
+/* horizontal divider between stacked panels */
+.rowsplit { flex: none; height: 10px; margin: -10px 0; cursor: row-resize; position: relative; z-index: 3; touch-action: none; }
+.rowsplit::after { content: ""; position: absolute; left: 12px; right: 12px; top: 4px; height: 2px; border-radius: 1px; background: transparent; transition: background .12s; }
+.rowsplit:hover::after, .rowsplit.drag::after { background: #1E93FF; }
+body.rowresizing, body.rowresizing * { cursor: row-resize !important; user-select: none !important; }

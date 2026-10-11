@@ -58,7 +58,7 @@ a.run:hover { color: #fff; }
 
 /* tab 1 */
 .live { display: grid; grid-template-columns: auto minmax(270px, .9fr) minmax(300px, 1.15fr); gap: 10px; padding: 10px; min-height: 0; }
-.stage { --board: min(calc(100vh / var(--ui, 1) - 44px - 20px - 38px - 44px - 24px - var(--pad-h)), calc(52vw / var(--ui, 1))); --pad-h: 92px; width: var(--board); display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.stage { --stats-h: 172px; --board: min(calc(100vh / var(--ui, 1) - 44px - 20px - 38px - 44px - 32px - var(--pad-h) - var(--stats-h)), calc(46vw / var(--ui, 1))); --pad-h: 92px; width: var(--board); display: flex; flex-direction: column; gap: 8px; min-height: 0; }
 .stagehead { height: 38px; display: flex; align-items: center; gap: 10px; min-width: 0; }
 .game { font: 700 24px var(--mono); letter-spacing: -.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 0 auto; min-width: 5ch; max-width: 50%; }
 .stagehead .chip { flex: none; }
@@ -363,3 +363,44 @@ details.add pre { margin: 5px 0 0; padding: 7px 9px; background: #05070a; border
 .recallbanner .rb-r { font: 600 12px var(--mono); color: #c9cfd8; }
 .membanks.recallpulse { animation: recallpulse 1.6s ease-out; }
 @keyframes recallpulse { 0% { box-shadow: 0 0 0 3px #E53AA3, 0 0 22px 4px rgba(229,58,163,.6); } 100% { box-shadow: none; } }
+
+/* the MongoDB panel is the point of the project: larger, higher, and every event shown */
+.rules { flex: .8; } .membanks { flex: 1.5; cursor: default; border-top: 3px solid #00ED64; }
+.membanks h2 { color: #00ED64; }
+.membanks h2 em { color: var(--ink3); }
+.memsum { display: flex; gap: 14px; align-items: baseline; padding: 6px 10px 2px; cursor: pointer; flex: none; }
+.memsum span { display: flex; align-items: baseline; gap: 5px; font: 700 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--ink2); }
+.memsum b { font: 700 26px/1 var(--mono); color: #fff; }
+.memsum span.s b { color: #ff8fd0; }
+.memsum i { display: none; }
+.memtag { padding: 0 10px 6px; font-size: 11.5px; line-height: 1.35; color: var(--ink3); border-bottom: 1px solid var(--line); flex: none; }
+#memEvents { padding: 0; flex: 1 1 0; min-height: 0; overflow: auto; }
+.mev { display: block; padding: 6px 10px 7px; border-bottom: 1px solid var(--line); border-left: 3px solid var(--blue); cursor: pointer; font-size: 13px; }
+.mev:hover { background: rgba(255,255,255,.04); }
+.mev .mh { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+.mev b { font: 700 10.5px var(--mono); letter-spacing: .08em; color: var(--blue); flex: none; }
+.mev .lv { font: 700 10px var(--mono); color: var(--ink3); flex: none; text-transform: uppercase; }
+.mev .txt { font-weight: 600; color: var(--ink); white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+.mev .sub { margin-top: 2px; font-size: 12px; line-height: 1.4; color: var(--ink2); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.mev.update { border-left-color: var(--yellow); } .mev.update b { color: var(--yellow); }
+.mev.delete { border-left-color: var(--red); } .mev.delete b { color: var(--red); } .mev.delete .sub { text-decoration: line-through; }
+.mev.search { border-left: 3px solid #E53AA3; background: rgba(229,58,163,.10); }
+.mev.search b { color: #ff8fd0; }
+.mev.search .txt { font: 700 13px/1.35 var(--mono); color: #fff; }
+.mev.search .sub { font: 600 11.5px var(--mono); color: #ff8fd0; }
+
+/* game column: score and per-level counts sit under the board; the middle column is for memory */
+.stage { width: max(var(--board), 560px); }
+.stage .boardwrap { margin-inline: auto; flex: none; }
+.statsrow { display: grid; grid-template-columns: minmax(0, .82fr) minmax(0, 1.18fr); gap: 8px; height: var(--stats-h); flex: none; min-height: 0; }
+.statsrow .panel { min-height: 0; min-width: 0; overflow: hidden; }
+.statsrow .hud { padding: 8px 10px; display: flex; flex-direction: column; justify-content: space-between; }
+.statsrow .hud .big { grid-template-columns: 1.2fr 1.1fr .7fr; gap: 6px; }
+.statsrow .hud .num { font-size: clamp(26px, 2.5vw, 40px); }
+.statsrow .hud .num.sm { font-size: clamp(22px, 2vw, 32px); }
+.statsrow .hud .lbl { font-size: 9px; letter-spacing: .04em; white-space: normal; line-height: 1.15; }
+.statsrow .lvchips { margin-top: 6px; }
+.statsrow .levels { max-height: none; display: flex; flex-direction: column; }
+.statsrow .levels #levelBars { overflow: auto; min-height: 0; flex: 1; }
+.statsrow .lvrow { height: 19px; grid-template-columns: 22px 1fr 96px; gap: 6px; font-size: 11.5px; }
+@media (max-height: 800px) { .stage { --stats-h: 132px; } .statsrow .lvrow { height: 16px; } .statsrow .hud .num { font-size: 24px; } }

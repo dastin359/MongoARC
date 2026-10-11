@@ -219,7 +219,7 @@ def prepare_workspace(workspace: Path, memory_tool: bool = False) -> None:
     shutil.copyfile(MEMORY_TOOL, workspace / "memory.py")
 
 
-def child_env(env: dict, run_id: str, memory_url: str | None) -> dict:
+def child_env(env: dict, run_id: str, memory_url: str | None, workspace: Path | None = None) -> dict:
     """Make CCARC's child environment fit for the agent: no database settings, its run id, its memory URL.
 
     With a memory URL (a memory run) CCARC's level gate and level-cleared message
@@ -237,6 +237,13 @@ def child_env(env: dict, run_id: str, memory_url: str | None) -> dict:
             env[k] = "0"
         else:
             env.pop(k, None)
+    if memory_url and workspace is not None:
+        # The doctrine sends code to scripts/. A script run from there has scripts/ as its import root, so
+        # `from session import client` fails until the agent patches sys.path; putting the workspace on
+        # PYTHONPATH removes that wasted step. (A control run is left exactly as CCARC builds it.)
+        root = str(Path(workspace).resolve())
+        parts = [p for p in env.get("PYTHONPATH", "").split(os.pathsep) if p and p != root]
+        env["PYTHONPATH"] = os.pathsep.join([root] + parts)
     return env
 
 
@@ -371,7 +378,7 @@ def launch(args: argparse.Namespace) -> dict:
     def build_workspace(config, info=None, **kw):
         ws = original(config, info, **kw)
         prepare_workspace(ws.root, memory_tool=memory_on)
-        child_env(ws.env, run_id, memory_url)
+        child_env(ws.env, run_id, memory_url, ws.root)
         return ws
 
     config = S.Ccarc3Config(game_id=args.game, out_dir=out_dir, model=args.model or S.DEFAULT_MODEL,
