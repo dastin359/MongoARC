@@ -1,0 +1,7 @@
+.env
+.local/
+runs/
+__pycache__/
+*.pyc
+.DS_Store
+.pytest_cache/
