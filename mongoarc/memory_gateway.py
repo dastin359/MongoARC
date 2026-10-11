@@ -27,6 +27,7 @@ usage: python -m mongoarc.memory_gateway [--port 8790]
 """
 from __future__ import annotations
 
+import time
 import argparse
 import json
 import re
@@ -214,6 +215,9 @@ def _keyword(db, run_id: str, query: str, n: int) -> list[dict]:
     return notes
 
 
+INDEX_WAIT_S = 6.0      # longest a search waits for notes that are stored but not yet embedded
+
+
 def recall(db, run_id: str, query: str, n: int = 5) -> dict:
     """The notes of THIS run closest in meaning to the question: nothing from any other run or game.
 
@@ -231,6 +235,10 @@ def recall(db, run_id: str, query: str, n: int = 5) -> dict:
         if stored and query:
             try:
                 notes, engine = _semantic(db, run_id, query, n), "atlas_vector_search"
+                waited = 0.0                      # Atlas embeds a note a moment after it is saved: a search made
+                while len(notes) < min(n, stored) and waited < INDEX_WAIT_S:   # right after a save waits for it
+                    time.sleep(0.5); waited += 0.5
+                    notes = _semantic(db, run_id, query, n)
             except PyMongoError:
                 notes, engine = _keyword(db, run_id, query, n), "text"
         elif stored:                              # no question: the most recently touched notes
