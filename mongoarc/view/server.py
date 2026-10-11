@@ -3,7 +3,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
+import datetime as dt
+import os
+import subprocess
+import sys
+import time
+
+from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pymongo.errors import PyMongoError
@@ -55,6 +61,55 @@ def favicon() -> Response:
     svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16" fill="#07090d"/>'
            '<rect x="3" y="3" width="10" height="10" fill="#FFDC00"/></svg>')
     return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "max-age=86400"})
+
+
+# ---- starting a game from the page. The one thing this server does besides reading MongoDB. ----
+_GAMES: dict = {"at": 0.0, "rows": []}
+PLAY_MODEL = os.environ.get("MONGOARC_PLAY_MODEL", "claude-opus-5-5")
+MAX_RUNNING = 2
+
+
+def _games() -> list[dict]:
+    """The ARC-AGI-3 games the API offers (needs ARC_API_KEY), cached for ten minutes."""
+    if _GAMES["rows"] and time.time() - _GAMES["at"] < 600:
+        return _GAMES["rows"]
+    D.load_env()
+    src = str(D.REPO / "CCARC" / "src")
+    if src not in sys.path:
+        sys.path.insert(0, src)
+    from ccarc.arc_3.client import list_games
+    rows = [{"game_id": g.game_id, "title": str(g.title or ""), "levels": len(g.baseline_actions or ()),
+             "baseline_total": sum(g.baseline_actions or ())} for g in list_games()]
+    rows.sort(key=lambda r: r["game_id"])
+    _GAMES.update(at=time.time(), rows=rows)
+    return rows
+
+
+@app.get("/api/games")
+def games():
+    try:
+        return _json({"games": _games(), "model": PLAY_MODEL})
+    except Exception as exc:  # noqa: BLE001 -- no key, no network: the page shows the reason, never a traceback
+        return JSONResponse({"games": [], "model": PLAY_MODEL, "error": f"game list unavailable ({type(exc).__name__})"},
+                            headers=NO_CACHE)
+
+
+@app.post("/api/launch")
+def launch(body: dict = Body(...)):
+    """Start one game with the real agent, recording into this server's database. Loopback only (the bind address)."""
+    game = str(body.get("game_id") or "")
+    if game not in {g["game_id"] for g in _games()}:
+        raise HTTPException(400, "unknown game")
+    running = _db()[D.RUNS].count_documents({"status": "running", "updated_at": {"$gte": D.now() - dt.timedelta(minutes=30)}})
+    if running >= MAX_RUNNING:
+        raise HTTPException(409, f"{running} games are already running; wait for one to finish")
+    out = D.REPO / "runs" / "dash" / f"{game}-{time.strftime('%H%M%S')}"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    log = open(str(out) + ".driver.log", "w")
+    subprocess.Popen([sys.executable, "-m", "mongoarc.launch", "--game", game, "--out-dir", str(out), "--agent", "claude",
+                      "--model", PLAY_MODEL, "--collect", "--timeout", "1500", "--label", "dashboard"],
+                     cwd=str(D.REPO), stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    return _json({"started": game, "model": PLAY_MODEL})
 
 
 @app.get("/api/palette")

@@ -50,7 +50,7 @@ CAPTIONS = {
     "live": "The pad shows the button it pressed; a crosshair shows the pixel it clicked.",
     "memory": "Its memory is documents in MongoDB, written in its own words. Atlas Vector Search embeds each note and each question itself.",
     "evo": "Level by level: what the agent saved and what it searched for, straight from the database.",
-    "evo2": "The hard metric: actions spent on each level against the human baseline, beside a no-memory control run.",
+    "evo2": "The hard metric: actions spent on each level, against the human baseline for that level.",
 }
 # Seconds of a 60 s video; scaled to --seconds.
 WEIGHTS = {"title": 2, "replay": 16, "live": 8, "memory": 16, "evo": 18}

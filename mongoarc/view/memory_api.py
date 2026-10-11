@@ -93,6 +93,20 @@ def banks(run_id: str = ""):
     return _json(out)
 
 
+@router.get("/api/memory/actions")
+def actions(run_id: str = "", limit: int = Query(500, ge=1, le=5000)):
+    """Every memory action an agent took, newest first: each save, update, delete and search.
+
+    These are the `memory_write` and `recall` events the memory gateway logs. With
+    run_id, that run's only.
+    """
+    q: dict = {"kind": {"$in": ["memory_write", "recall"]}, "op": {"$ne": "list"}}
+    if run_id:
+        q["run_id"] = run_id
+    cur = _db()[D.EVENTS].find(q).sort([("at", -1), ("seq", -1)]).limit(limit)
+    return _json(list(cur))
+
+
 @router.get("/api/memory/runs")
 def run_labels(limit: int = Query(1000, ge=1, le=5000)):
     """run_id -> the few run fields a memory card shows next to a run id."""

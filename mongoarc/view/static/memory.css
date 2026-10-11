@@ -190,3 +190,26 @@
 .mem-tscope b { color: var(--mem-ink); font-weight: 700; }
 .mem-feed h3 em { font: 500 11px var(--mem-sans); letter-spacing: 0; color: var(--mem-ink3); font-style: normal; margin-left: 6px; }
 .mem-ntitle { font: 700 15px var(--mem-sans); color: var(--mem-ink); overflow-wrap: anywhere; }
+
+/* left column: every memory action; the change stream keeps a short strip under it */
+.mem-acts { flex: 3 1 0; min-height: 0; display: flex; flex-direction: column; background: var(--mem-panel); border: 1px solid var(--mem-line); border-top: 3px solid #00ED64; border-radius: 6px; overflow: hidden; }
+.mem-acts h3 { margin: 0; padding: 7px 10px 6px; font: 700 11px var(--mem-mono); letter-spacing: .12em; color: #00ED64; border-bottom: 1px solid var(--mem-line); flex: none; }
+.mem-acts h3 em { font: 500 11px var(--mem-sans); letter-spacing: 0; color: var(--mem-ink3); font-style: normal; margin-left: 6px; }
+.mem-actlist { flex: 1; min-height: 0; overflow: auto; }
+.mem-actnone { padding: 10px; color: var(--mem-ink3); font-size: 13px; }
+.mem-act { padding: 7px 10px 8px; border-bottom: 1px solid var(--mem-line); border-left: 3px solid #1E93FF; cursor: pointer; }
+.mem-act:hover { background: rgba(255,255,255,.05); }
+.mem-ah { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
+.mem-ah b { font: 700 10.5px var(--mem-mono); letter-spacing: .08em; color: #1E93FF; }
+.mem-alv { font: 700 10px var(--mem-mono); color: var(--mem-ink3); text-transform: uppercase; }
+.mem-at { font: 600 13.5px/1.35 var(--mem-sans); color: var(--mem-ink); overflow-wrap: anywhere; }
+.mem-as { margin-top: 3px; font-size: 12.5px; line-height: 1.4; color: var(--mem-ink2); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.mem-act.mem-act-update { border-left-color: #FFDC00; } .mem-act.mem-act-update .mem-ah b { color: #FFDC00; }
+.mem-act.mem-act-delete { border-left-color: #F93C31; } .mem-act.mem-act-delete .mem-ah b { color: #F93C31; } .mem-act.mem-act-delete .mem-as { text-decoration: line-through; }
+.mem-act.mem-act-search { border-left-color: #E53AA3; background: rgba(229,58,163,.10); }
+.mem-act.mem-act-search .mem-ah b { color: #ff8fd0; }
+.mem-act.mem-act-search .mem-at { font: 700 13.5px/1.35 var(--mem-mono); color: #fff; }
+.mem-act.mem-act-search .mem-as { font: 600 12px var(--mem-mono); color: #ff8fd0; }
+.mem-root .mem-feed { flex: 0 0 110px; }
+.mem-card.mem-hit { animation: mem-hit 1.8s ease-out; }
+@keyframes mem-hit { 0% { box-shadow: 0 0 0 3px #E53AA3, 0 0 24px 4px rgba(229,58,163,.6); } 100% { box-shadow: none; } }

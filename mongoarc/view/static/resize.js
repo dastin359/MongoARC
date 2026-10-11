@@ -121,6 +121,7 @@
       onWidth: function (i, px) {
         if (i !== 0 || !stage || !wrap) return;
         if (px == null) { stage.style.width = ''; stage.style.removeProperty('--board'); stage.classList.remove('resized'); return; }
+        if (!root.clientHeight) return;   // the tab is hidden: it is fitted when it is shown (below)
         var other = 0, kids = stage.children;
         for (var k = 0; k < kids.length; k++) if (kids[k] !== wrap) other += kids[k].offsetHeight;
         var cs = getComputedStyle(root), gap = parseFloat(getComputedStyle(stage).rowGap) || 8;
@@ -130,6 +131,12 @@
         stage.style.setProperty('--board', Math.max(140, Math.min(availH, px)) + 'px');
       },
     });
+  }
+  function refitOnShow() {  // a tab that was hidden when the page loaded gets its sizes when it is first shown
+    var root = document.getElementById('tab-live');
+    if (!root || !window.MutationObserver) return;
+    new MutationObserver(function () { if (!root.hidden) setTimeout(function () { hooks.forEach(function (f) { f(); }); }, 30); })
+      .observe(root, { attributes: true, attributeFilter: ['hidden'] });
   }
   /* EVOLUTION: generations | charts and lessons. */
   function evolution() {
@@ -190,7 +197,7 @@
     var side = document.querySelector('#tab-live .side');
     if (side) attachRow(side.querySelector('.membanks'), side.querySelector('.rules'), 'live.memory');
   }
-  window.ColResize = { attach: attach, attachRow: attachRow, setScale: setScale, scale: zf, init: function () { scaleControl(); live(); liveRows(); evolution(); memory(); } };
+  window.ColResize = { attach: attach, attachRow: attachRow, setScale: setScale, scale: zf, init: function () { scaleControl(); live(); liveRows(); evolution(); memory(); refitOnShow(); } };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', window.ColResize.init);
   else window.ColResize.init();
 })();

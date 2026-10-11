@@ -47,7 +47,7 @@ Schema: [docs/SCHEMA.md](docs/SCHEMA.md).
 `python -m mongoarc.view` serves a page that reads only from MongoDB.
 
 - **Live play:** the game board as it is played, or replayed at any speed; an on-screen controller that lights the button the agent pressed and marks each pixel it clicks; the agent's reasoning and code; the notes it has saved; and each memory search highlighted as it happens.
-- **Levels:** for one game, actions spent on each level against the human baseline, with the memory writes and searches made on that level, and a no-memory control run of the same game overlaid when there is one.
+- **Levels:** for one game, actions spent on each level against the human baseline, with the memory writes and searches made on that level.
 - **Memory:** the notes bank. Open it to read the documents, raw JSON included, updating live.
 
 Columns can be resized by dragging, and the text size follows the window (or the A- / A+ control). A walkthrough for a demo is in [docs/DEMO.md](docs/DEMO.md).
@@ -69,13 +69,6 @@ python -m mongoarc.launch --game sb26-7fbdac44 --out-dir runs/sb26 --agent claud
     --model claude-opus-5-5 --collect --timeout 1500
 ```
 
-A control run of the same game: plain CCARC, with its own doctrine and gate and no memory tool:
-
-```bash
-python -m mongoarc.launch --game sb26-7fbdac44 --out-dir runs/sb26-control --agent claude \
-    --model claude-opus-5-5 --no-memory --role control --collect --timeout 1500
-```
-
 At no cost, a scripted stand-in agent on a bundled toy game (it exercises the launcher, the collector and the dashboard, but does not use the memory tool):
 
 ```bash
@@ -88,14 +81,13 @@ Semantic search needs Atlas. On a plain local `mongod`, `recall` falls back to t
 
 ## Result from the hackathon run
 
-One real ARC-AGI-3 game, CD82 (6 levels), played by Claude Opus 5.5 with this memory, against one earlier run of the same game by the same model with plain CCARC and no memory tool. One run each, so the comparison shows nothing about efficiency; it is here to show the mechanism working on the real benchmark.
+One real ARC-AGI-3 game, CD82 (6 levels), played by Claude Opus 5.5 with this memory. It is one run, shown to demonstrate the mechanism working on the real benchmark, not to claim an efficiency gain.
 
 | | Result | Actions per level (human baseline 55, 8, 41, 21, 23, 23) | Total |
 |---|---|---|---|
 | With MongoDB memory | won 6/6 | 14, 6, 18, 14, 13, 16 | 81 |
-| Control, no memory | won 6/6 | 18, 6, 16, 16, 13, 16 | 85 |
 
-In the memory run the agent saved 7 notes (one after every level, plus a note of the game's rules), and searched its memory 5 times, on 4 of the 6 levels. Each search after the first went through Atlas Vector Search and returned the notes it had saved on earlier levels. No note was updated or deleted in this game.
+The agent saved 7 notes (one after every level, plus a note of the game's rules), and searched its memory 5 times, on 4 of the 6 levels. Each search after the first went through Atlas Vector Search and returned the notes it had saved on earlier levels. No note was updated or deleted in this game.
 
 ## What is new here and what is not
 

@@ -243,7 +243,58 @@
       S.timers.err = setTimeout(function () { if (S.active && !S.loaded) refresh(); }, 2000);
     });
   }
-  function refresh() { loadBanks(); loadRuns(); loadList(false); }
+  function refresh() { loadBanks(); loadRuns(); loadList(false); loadActions(); }
+
+  /* ---- every memory action of the run (or of all runs): each save, update, delete and search, newest first ---- */
+  var OPS = { save: "SAVED", update: "UPDATED", "delete": "DELETED" };
+  function shortId(id) { var m = /mem\/([^/:]+)$/.exec(String(id || "")); return m ? "N" + m[1] : String(id || "").split(":").pop(); }
+  function loadActions() {
+    if (!S.root || !S.el.acts) return;
+    var want = S.run;
+    return api("/api/memory/actions?limit=500" + (want ? "&run_id=" + encodeURIComponent(want) : "")).then(function (rows) {
+      if (want !== S.run) return;
+      var sig = rows.length + ":" + (rows[0] ? rows[0]._id : "");
+      if (sig === S.actSig) return;
+      S.actSig = sig;
+      var n = function (f) { return rows.filter(f).length; };
+      S.el.actinfo.textContent = rows.length
+        ? n(function (e) { return e.kind === "memory_write" && e.op === "save"; }) + " saved \u00b7 " +
+          n(function (e) { return e.kind === "memory_write" && e.op === "update"; }) + " updated \u00b7 " +
+          n(function (e) { return e.kind === "memory_write" && e.op === "delete"; }) + " deleted \u00b7 " +
+          n(function (e) { return e.kind === "recall"; }) + " searches" + (want ? "" : " \u00b7 all runs")
+        : "";
+      if (!rows.length) {
+        S.el.acts.innerHTML = '<div class="mem-actnone">' + (want ? "This run has not written to or searched its memory yet." : "No memory action recorded yet.") + "</div>";
+        return;
+      }
+      S.el.acts.innerHTML = rows.map(function (e) {
+        var search = e.kind === "recall", ids = e.notes || [];
+        var head = '<div class="mem-ah"><b>' + (search ? "SEARCHED" : OPS[e.op] || "WROTE") + "</b>" +
+          (e.level == null ? "" : '<span class="mem-alv">level ' + esc(e.level) + "</span>") +
+          (want ? "" : '<span class="mem-alv">' + esc(String(e.run_id || "").split("-")[0]) + "</span>");
+        if (search) {
+          return '<div class="mem-act mem-act-search" data-notes="' + esc(ids.join(" ")) + '">' + head +
+            '<span class="mem-at">\u201c' + esc(e.query || "") + "\u201d</span></div>" +
+            '<div class="mem-as">\u2192 ' + (ids.length ? ids.length + " note" + (ids.length === 1 ? "" : "s") + " returned:  " + esc(ids.map(shortId).join("  ")) : "no note returned") +
+            (e.engine === "atlas_vector_search" ? "   \u00b7   Atlas Vector Search" : e.engine === "text" ? "   \u00b7   text index" : "") + "</div></div>";
+        }
+        var body = String(e.text || "").replace(/^agent (saved|updated|deleted) note [^"]*"[^"]*"(?: \(version \d+\))?:\s*/, "");
+        return '<div class="mem-act mem-act-' + esc(e.op || "save") + '" data-notes="' + esc(e.note || "") + '">' + head +
+          '<span class="mem-at">' + esc(shortId(e.note)) + "  " + esc(e.title || "") + "</span></div>" +
+          '<div class="mem-as">' + esc(body) + "</div></div>";
+      }).join("");
+    }).catch(function () { /* the next refresh retries */ });
+  }
+  function flashNotes(ids) {  // show on the right which documents an action touched or a search returned
+    var first = null;
+    ids.forEach(function (id) {
+      var c = S.cards.get(id);
+      if (!c || !c.el) return;
+      if (!first) first = c.el;
+      c.el.classList.remove("mem-hit"); void c.el.offsetWidth; c.el.classList.add("mem-hit");
+    });
+    if (first) first.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
   function later(name, fn, ms) { clearTimeout(S.timers[name]); S.timers[name] = setTimeout(fn, ms); }
 
   /* ---------- the event stream ---------- */
@@ -289,6 +340,7 @@
     paintFeed();
     paintStatus();
     later("banks", loadBanks, 120);
+    later("acts", loadActions, 200);
     if (ev.bank !== S.bank) return;
     if (!S.loaded) { S.dirty = true; return; }
     if (ev.op === "refresh" || S.q || S.run) return later("list", function () { loadList(false); }, 150);
@@ -405,19 +457,22 @@
     S.loaded = false;
     if (!S.root) return;
     paintHead();
-    if (S.active) { loadBanks(); loadList(true); }  // the tiles count the filtered run's documents
+    S.actSig = null;
+    if (S.active) { loadBanks(); loadList(true); loadActions(); }  // the tiles count the filtered run's documents
   }
   function setActive(on) {
     on = !!on;
     if (on === S.active || !S.root) { S.active = on; return; }
     S.active = on;
-    if (on) { connect(); refresh(); } else { disconnect(); setConn("idle"); }
+    clearInterval(S.actTimer);
+    if (on) { connect(); refresh(); S.actTimer = setInterval(loadActions, 2500); } else { disconnect(); setConn("idle"); }
   }
   function mount(rootEl) {
     if (S.root === rootEl) return;
     S.root = rootEl;
     rootEl.innerHTML =
       '<div class="mem-root"><aside class="mem-rail"><div class="mem-tiles" style="display:contents"></div>' +
+      '<div class="mem-acts"><h3>MEMORY ACTIONS <em class="mem-actinfo"></em></h3><div class="mem-actlist"></div></div>' +
       '<div class="mem-feed"><h3>CHANGE STREAM <em>db.notes, live</em></h3><div class="mem-feedlist"></div></div></aside>' +
       '<section class="mem-main"><div class="mem-status"></div><div class="mem-head"><span class="mem-title"></span>' +
       '<span class="mem-sub"></span><span class="mem-grow"></span><span class="mem-runf" hidden><span></span>' +
@@ -426,7 +481,7 @@
       '<button type="button" class="mem-btn mem-rawall" title="show the stored JSON of every document">RAW JSON</button></div>' +
       '<div class="mem-list"></div></section></div>';
     var q = function (sel) { return rootEl.querySelector(sel); };
-    S.el = { tiles: q(".mem-tiles"), feed: q(".mem-feedlist"), status: q(".mem-status"), title: q(".mem-title"), sub: q(".mem-sub"),
+    S.el = { tiles: q(".mem-tiles"), feed: q(".mem-feedlist"), acts: q(".mem-actlist"), actinfo: q(".mem-actinfo"), status: q(".mem-status"), title: q(".mem-title"), sub: q(".mem-sub"),
       search: q(".mem-search"), rawAll: q(".mem-rawall"), runf: q(".mem-runf"), list: q(".mem-list") };
 
     var p = new URLSearchParams(location.search);
@@ -437,6 +492,8 @@
     S.el.search.value = S.q;
 
     rootEl.addEventListener("click", function (e) {
+      var act = e.target.closest(".mem-act");
+      if (act && rootEl.contains(act)) return void flashNotes((act.dataset.notes || "").split(" ").filter(Boolean));
       var t = e.target.closest(".mem-run, .mem-rawbtn, .mem-tile, .mem-fl, .mem-rawall, .mem-runx");
       if (!t || !rootEl.contains(t)) return;
       if (t.classList.contains("mem-run")) {

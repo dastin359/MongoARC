@@ -404,3 +404,10 @@ details.add pre { margin: 5px 0 0; padding: 7px 9px; background: #05070a; border
 .statsrow .levels #levelBars { overflow: auto; min-height: 0; flex: 1; }
 .statsrow .lvrow { height: 19px; grid-template-columns: 22px 1fr 96px; gap: 6px; font-size: 11.5px; }
 @media (max-height: 800px) { .stage { --stats-h: 132px; } .statsrow .lvrow { height: 16px; } .statsrow .hud .num { font-size: 24px; } }
+
+/* start a game from the page */
+.playbox { display: inline-flex; align-items: center; gap: 6px; margin-right: 12px; flex: none; }
+.playbox select { max-width: 190px; }
+.playbox button { font: 700 12px var(--mono); letter-spacing: .08em; background: #00ED64; color: #001E2B; border-color: #00ED64; padding: 5px 12px; }
+.playbox button:disabled { background: var(--panel2); color: var(--ink3); border-color: var(--line); cursor: default; }
+#launchMsg { font: 600 11px var(--mono); color: #00ED64; max-width: 240px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

@@ -877,12 +877,11 @@ function renderChart(r, rows, use) {
   const item = (cls, style, text) => { const s = el('span'), i = el('i', cls); if (style) i.style.background = style; s.append(i, text); return s; };
   leg.append(self ? item('ring', null, 'this run (control, no memory)') : item('dot', col, 'this run (with memory)'));
   if (ctl) { const s = item('ring', null, 'control (no memory) '); s.append(runLink(ctl._id)); leg.append(s); }
-  else if (!self) leg.append(el('span', 'mute', 'no finished control run of this game in the database'));
   // A level a finished run never cleared is an X at the top; a level a running game has not reached yet is left empty.
   const failed = (v, run) => !v.cleared && !v.playing && run.status !== 'running';
   if (rows.some((v) => failed(v, r))) leg.append(item('x' + (self ? ' c' : ''), null, self ? 'level not cleared' : 'this run: level not cleared'));
   if (ctl && crow.slice(0, rows.length).some((v) => failed(v, ctl))) leg.append(item('x c', null, 'control: level not cleared'));
-  if (!self) leg.append(el('span', 'mute', 'SAVED: notes written while on that level · RECALLS: memory searches made there; nudged = after a harness prompt'));
+  if (!self) leg.append(el('span', 'mute', 'SAVED: notes written while on that level · SEARCHES: memory searches the agent made there; prompted = the harness reminded it to search when the level began'));
   const L = 78, R = 16, T = 16, B = 76, pw = W - L - R, ph = H - T - B, N = rows.length, slot = pw / N;
   let top = 1.5;
   for (const x of [...rows, ...crow]) if (x.ratio != null && (x.cleared || x.playing)) top = Math.max(top, x.ratio * 1.14);
@@ -905,7 +904,7 @@ function renderChart(r, rows, use) {
     else if (failed(v, ctl)) cross(x(v.level) + (rows[v.level] && failed(rows[v.level], r) ? 13 : 0), T + 9, '#b3bdca', 2);
   }
   const rowY = [T + ph + 20, T + ph + 36, T + ph + 52, T + ph + 68];
-  ['LEVEL', 'ACTIONS', 'SAVED', 'RECALLS'].forEach((name, k) => s.append(svg('text', { x: L - 8, y: rowY[k], 'text-anchor': 'end', class: 't' }, name)));
+  ['LEVEL', 'ACTIONS', 'SAVED', 'SEARCHES'].forEach((name, k) => s.append(svg('text', { x: L - 8, y: rowY[k], 'text-anchor': 'end', class: 't' }, name)));
   rows.forEach((v, i) => {
     const cx = x(i), u = use.by.get(i) || { searches: [], writes: [], nudges: 0, ops: { save: 0, update: 0, delete: 0 } }, c = crow[i];
     if (v.cleared && v.ratio != null) {
@@ -925,7 +924,7 @@ function renderChart(r, rows, use) {
     const reached = v.cleared || v.playing || v.actions > 0;
     const saved = [[u.ops.save, 'new'], [u.ops.update, 'upd'], [u.ops.delete, 'del']].filter((p) => p[0]).map((p) => p[0] + ' ' + p[1]).join(' ');
     s.append(svg('text', { x: cx, y: rowY[2], 'text-anchor': 'middle', class: self || !reached ? '' : saved ? 'w' : v.cleared ? 'z' : '' }, self ? 'no memory' : !reached ? '-' : saved || '0'));
-    const st = self ? 'no memory' : !reached ? '-' : String(u.searches.length) + (u.nudges ? ' (nudged)' : '');
+    const st = self ? 'no memory' : !reached ? '-' : String(u.searches.length) + (u.nudges ? ' (prompted)' : '');
     s.append(svg('text', { x: cx, y: rowY[3], 'text-anchor': 'middle', class: self || !reached || (!i && !u.searches.length) ? '' : u.searches.length ? 'ok' : 'z' }, st));  // level 0 starts with an empty memory: nothing to search
     const hit = svg('rect', { x: L + i * slot, y: T, width: slot, height: ph + B, class: 'hit' });
     hit.addEventListener('mousemove', (e) => showTip(e, `level ${i}` + (self ? ' · control run, no memory' : '') + '\n'
@@ -1045,7 +1044,35 @@ function bind() {
   let rz = null;
   addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => { pinFeed(); if (S.tab === 'levels') renderEvolution(); }, 120); });
 }
+/* ---------- start a game from the page ---------- */
+async function loadGames() {
+  const sel = $('#gameSel'), btn = $('#btnLaunch'), msg = $('#launchMsg');
+  if (!sel) return;
+  try {
+    const r = await api('/api/games');
+    if (r.error || !r.games.length) { msg.textContent = r.error || 'no games'; return; }
+    for (const g of r.games) {
+      const o = el('option', null, `${g.game_id.split('-')[0].toUpperCase()}  ·  ${g.levels} levels`);
+      o.value = g.game_id; sel.append(o);
+    }
+    sel.onchange = () => { btn.disabled = !sel.value; msg.textContent = ''; };
+    btn.onclick = async () => {
+      if (!sel.value) return;
+      btn.disabled = true; msg.textContent = 'starting ' + sel.value.split('-')[0].toUpperCase() + ' ...';
+      try {
+        const res = await fetch('/api/launch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ game_id: sel.value }) });
+        const out = await res.json();
+        if (!res.ok) throw new Error(out.detail || 'could not start');
+        msg.textContent = 'started on ' + out.model + '; following it live';
+        S.follow = true; S.mode = 'live'; setTab('live'); $('#runSel').value = '';
+        S.runId = null; S.epoch++; stopPlay(); refreshRuns().catch(console.warn);
+        setTimeout(() => { msg.textContent = ''; sel.value = ''; }, 9000);
+      } catch (e) { msg.textContent = String(e.message || e); btn.disabled = false; }
+    };
+  } catch (e) { msg.textContent = 'game list unavailable'; }
+}
 async function boot() {
+  loadGames();
   AC.mountOverlay($('#boardWrap')); AC.mountPad($('#ctlPad'), { layout: 'row' }); AC.mountTape($('#ctlTape'), { max: 12 });
   if (window.MemoryTab) {
     MemoryTab.mount($('#tab-memory'));
