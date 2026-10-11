@@ -1,6 +1,6 @@
 # MongoARC
 
-**A harness that rewrites itself between games.** An agent (Claude Code) plays [ARC-AGI-3](https://three.arcprize.org) games it has never seen. Everything it does is recorded in MongoDB Atlas. After each game the harness reads that record, distils what transferred, and builds the next *generation* of itself: the lessons it carries, the section it adds to the agent's prompt, and its launch knobs. A generation that scores worse than its parent on the hard metric is reverted.
+**A harness that rewrites itself between games.** An agent (Claude Code) plays [ARC-AGI-3](https://three.arcprize.org) games it has never seen. Everything it does is recorded in MongoDB Atlas. After each game the harness reads that record, distils what transferred, and builds the next *generation* of itself: the lessons it carries, the section it adds to the agent's prompt, and its launch knobs. Each new generation is then scored on a held-out game that no generation ever learns from, and is reverted, with its lessons retired, if it does worse than its parent on that hard metric (actions spent against the human baseline).
 
 Built for the Harness Engineering & Model Wrangling hackathon (SF Tech Week, 2026-10-11), problem statement 1, *Recursive Harnessing*.
 
@@ -19,16 +19,18 @@ Built for the Harness Engineering & Model Wrangling hackathon (SF Tech Week, 202
                                                      runs · actions · events · rulebooks · notes
                             ┌───────────────────────────┘
                             ▼
-      evaluate (actions per level vs. human baseline)  →  select (revert if worse than parent)
+      evaluate (actions per level vs. human baseline)
                             ▼
-      distil (Claude reads the rule book, metrics, the agent's notes)  →  generation N+1
+      distil (Claude reads the rule book, metrics, the agent's notes)  →  candidate generation N+1
+                            ▼
+      validate on a held-out game  →  keep N+1, or revert to N and retire what N+1 added
 ```
 
 What changes from one generation to the next:
 
 | Part of the harness | How it evolves |
 |---|---|
-| **Rules** | Game-independent lessons distilled from each game's rule book, with the evidence (run, level, rule) each came from. Lessons are retired or revised as evidence accumulates. |
+| **Rules** | Game-independent lessons distilled from each game's rule book, with the evidence (run, level, rule) each came from. Lessons are retired or revised as evidence accumulates, and retired wholesale when the generation that introduced them is reverted. |
 | **Context policy** | The addendum appended to the agent's prompt is regenerated from the active lessons. Mid-game, a coach watches the action count per level and, when the agent is stuck, sends the most relevant lessons into the live session. |
 | **Guardrails** | Launch knobs (action budget multiple, nudge count, the coach's stuck threshold) are part of the generation and can be changed by the distiller. |
 | **Memory** | Every game starts in a brand-new workspace: empty `notes/`, empty `scripts/`, no rule book. Nothing is copied between games. What carries over lives in MongoDB and is reached by query: the agent's `memory.py recall <words>` searches distilled lessons plus the notes and verified rules of earlier games. The prose an agent writes under `notes/` is mirrored into MongoDB as it is written, edited or deleted; code under `scripts/` stays local to its game and is never stored. |
@@ -49,7 +51,11 @@ Schema: [docs/SCHEMA.md](docs/SCHEMA.md).
 
 ## The live view
 
-`python -m mongoarc.view` serves a page that reads only from MongoDB: the game board as it is played (or replayed at any speed), the agent's reasoning and code beside it, the rule book growing at each level, the lessons this run was launched with, and an Evolution tab showing each generation's diff and the efficiency of the runs played under it.
+`python -m mongoarc.view` serves a page that reads only from MongoDB.
+
+- **Live play:** the game board as it is played, or replayed at any speed; an on-screen controller that lights the button the agent pressed and marks each pixel it clicks; the agent's reasoning and code; the rule book growing at each level; the memory banks with live counts and the notes this run has written.
+- **Evolution:** each generation's diff and the distiller's rationale, the efficiency of every run by generation (training, held-out validation and control runs marked apart), and the lessons with their evidence.
+- **Memory:** the four memory banks (lessons, notes, rule books, generations). Open one to read its documents, raw JSON included, updating as MongoDB reports each insert, update and delete.
 
 ## Run it
 
@@ -69,18 +75,30 @@ python -m mongoarc.evolve run --games mk01-toy,mk01-toy,mk01-toy --agent fake \
     --arc-root http://127.0.0.1:18765 --label demo --distiller heuristic
 ```
 
-A real agent on the toy games, with Claude as the distiller:
+A real agent on the toy games, with Claude as the distiller and one game held out for validation:
 
 ```bash
-python -m mongoarc.evolve run --games mk02-keys,mk03-lava,mk04-ice,mk05-doors --agent claude \
-    --arc-root http://127.0.0.1:18765 --label toys --distiller claude
+python -m mongoarc.evolve run --games mk02-keys,mk03-lava,mk04-ice --validate mk05-doors --val-repeat 2 \
+    --agent claude --model claude-sonnet-5-5 --arc-root http://127.0.0.1:18765 --label toys --distiller claude
+```
+
+A control run (no lessons, no memory tool) for comparison on any game:
+
+```bash
+python -m mongoarc.launch --game mk05-doors --gen 0 --no-memory --role control --collect \
+    --arc-root http://127.0.0.1:18765 --out-dir runs/control/mk05
 ```
 
 Real ARC-AGI-3 games (needs `ARC_API_KEY`; list ids with `PYTHONPATH=CCARC/src python3 -m ccarc arc-3 games`):
 
 ```bash
-python -m mongoarc.evolve run --games sb26-7fbdac44,vc33-5430563c --agent claude --label real --distiller claude
+python -m mongoarc.evolve run --games sb26-7fbdac44,cd82-fb555c5d --agent claude --model claude-opus-5-5 \
+    --label real --distiller claude --timeout 1500
 ```
+
+Runs have a role. `train` runs are evidence for the distiller and feed later games' memory. `validation` and `control` runs are only scored: nothing they produce reaches the distiller or another game's memory search, and a search never returns records of the game being played.
+
+A walkthrough of the dashboards for a demo is in [docs/DEMO.md](docs/DEMO.md).
 
 ## What is new here and what is not
 
