@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
-"""Record a silent, captioned demo video (H.264 MP4) of the mongoARC dashboards.
+"""Record a silent, captioned demo video (H.264 MP4) of a mongoARC dashboard.
 
     python3 scripts/record_demo.py --out .local/demo.mp4 \
-        [--arc http://127.0.0.1:8788] [--toys http://127.0.0.1:8787] [--seconds 60] [--size 1920x1080]
+        [--arc http://127.0.0.1:8788] [--run RUN_ID] [--seconds 60] [--size 1920x1080]
 
 It starts its own headless Chrome (own profile under .local/, own random DevTools port), drives it
 over the DevTools protocol, screenshots the page at a steady rate and pipes the frames to ffmpeg.
-It only reads: HTTP GETs against the dashboards, nothing else. The Chrome it started is the only
+It only reads: HTTP GETs against the dashboard, nothing else. The Chrome it started is the only
 process it stops.
 
-Storyboard (docs/DEMO.md), scaled to --seconds:
-  title card, LIVE PLAY replay of the best finished real game, LIVE PLAY following a running game,
-  MEMORY tab (notes, lessons, one raw document), EVOLUTION on --arc, EVOLUTION on --toys.
-Run ids are picked from /api/runs when the recording starts. A segment whose kind of run does not
-exist hands its time to its neighbour (no running game: the replay runs longer).
+Storyboard, one dashboard (--arc) and one run, scaled to --seconds:
+  title card (2 s), LIVE PLAY replay of the run (16 s), LIVE PLAY following a running game (8 s),
+  MEMORY tab filtered to the run: notes, lessons, one raw document (16 s),
+  EVOLUTION tab of the run, two captions (18 s).
+The run is --run if given, else the best finished run in /api/runs at record time (role train
+preferred, most levels cleared, won preferred). A segment whose kind of run does not exist hands
+its time to its neighbour (no running game: the replay runs longer). --toys is accepted and unused.
 
 Page loads are not recorded: the clock of the video is the frame count, so the file is exactly
 --seconds long while the recording itself takes roughly 25 s longer.
@@ -23,6 +25,7 @@ import base64
 import json
 import os
 import random
+import select
 import shutil
 import signal
 import socket
@@ -42,15 +45,15 @@ SPEEDS = [1, 2, 4, 8, 16]
 FINISHED = ("won", "finished", "lost", "stopped")
 
 CAPTIONS = {
-    "title": "mongoARC: a harness that rewrites itself between games",
+    "title": "mongoARC: a harness that rewrites itself between levels",
     "replay": "A Claude agent plays a real ARC-AGI-3 game. Every move, frame and thought is recorded in MongoDB Atlas.",
-    "live": "Live: the pad shows the button it pressed; a crosshair shows the pixel it clicked.",
-    "memory": "Its memory lives in MongoDB: notes it writes, rules it verified, lessons distilled across games. Updated by change stream.",
-    "evo_arc": "After each game the harness rewrites itself: a new generation, with the reason and the evidence.",
-    "evo_toys": "Each generation is scored on a held-out game. If it does worse than its parent, it is reverted.",
+    "live": "The pad shows the button it pressed; a crosshair shows the pixel it clicked.",
+    "memory": "Its memory lives in MongoDB: the notes it writes, the rules it verified, the lessons from each level it cleared.",
+    "evo": "After every level the harness rewrites itself: a new generation, with the reason and the evidence.",
+    "evo2": "The hard metric: actions spent on each level against the human baseline.",
 }
 # Seconds of a 60 s video; scaled to --seconds.
-WEIGHTS = {"title": 2, "replay": 15, "live": 8, "memory": 13, "evo_arc": 14, "evo_toys": 8}
+WEIGHTS = {"title": 2, "replay": 16, "live": 8, "memory": 16, "evo": 18}
 
 
 def log(*a):
@@ -79,11 +82,33 @@ def free_port():
 
 
 class CDP:
-    """Minimal synchronous DevTools client. No domain is enabled, so no events queue up."""
+    """Minimal synchronous DevTools client; events are read (and screencast frames kept) whenever it waits."""
 
     def __init__(self, ws_url):
         self.ws = websocket.create_connection(ws_url, timeout=30, suppress_origin=True)
         self.n = 0
+        self.frame = None   # newest screencast frame (base64 JPEG)
+        self.frame_n = 0
+
+    def _event(self, msg):
+        if msg.get("method") == "Page.screencastFrame":
+            p = msg["params"]
+            self.frame = p["data"]
+            self.frame_n += 1
+            self.n += 1  # Chrome sends the next frame only after this; nobody waits for its reply
+            self.ws.send(json.dumps({"id": self.n, "method": "Page.screencastFrameAck", "params": {"sessionId": p["sessionId"]}}))
+
+    def pump(self, seconds):
+        """Sleep for `seconds` of real time while taking in whatever Chrome sends."""
+        end = time.monotonic() + max(0.0, seconds)
+        while True:
+            left = end - time.monotonic()
+            if left <= 0:
+                return
+            if select.select([self.ws.sock], [], [], left)[0]:
+                raw = self.ws.recv()
+                if raw:
+                    self._event(json.loads(raw))
 
     def call(self, method, **params):
         self.n += 1
@@ -95,6 +120,7 @@ class CDP:
                 if "error" in msg:
                     raise RuntimeError("%s: %s" % (method, msg["error"]))
                 return msg.get("result", {})
+            self._event(msg)
 
     def js(self, expr):
         """Evaluate in the page; returns the value, or None if the page is mid-navigation or the code threw."""
@@ -151,17 +177,28 @@ def title_url(text, w, h):
 
 
 # ---------- choosing what to show ----------
-def pick_runs(base):
+def pick_runs(base, want=None):
+    """(the run the video is about, a running run or None, whether the first is finished or was asked for)."""
     runs = get_json(base + "/api/runs") or []
     done = [r for r in runs if r.get("status") in FINISHED]
     live = [r for r in runs if r.get("status") == "running"]
     done.sort(key=lambda r: (r.get("role") == "train", r.get("level") or 0, r.get("status") == "won", r.get("n_actions") or 0), reverse=True)
-    live.sort(key=lambda r: (r.get("n_actions") or 0), reverse=True)
-    return (done[0] if done else None), (live[0] if live else None)
+    live.sort(key=lambda r: (r.get("role") == "train", r.get("n_actions") or 0), reverse=True)
+    running = live[0] if live else None
+    if want:
+        doc = next((r for r in runs if r.get("_id") == want), None) or get_json(base + "/api/runs/" + urllib.parse.quote(want))
+        if not isinstance(doc, dict) or not doc.get("_id"):
+            log("WARNING: --run %s is not known to %s; its URLs are opened anyway" % (want, base))
+            doc = {"_id": want}
+        return doc, running, True
+    if done:
+        return done[0], running, True
+    return running, running, False
 
 
-def bank_counts(base):
-    return {b.get("name"): b.get("count") or 0 for b in (get_json(base + "/api/memory/banks") or []) if isinstance(b, dict)}
+def bank_n(base, bank, run_id=None):
+    d = get_json("%s/api/memory/%s?limit=5%s" % (base, bank, "&run_id=" + urllib.parse.quote(run_id) if run_id else ""))
+    return len(d) if isinstance(d, list) else 0
 
 
 JS_BOARD_READY = "(function(){var e=document.querySelector('#boardEmpty');return !!e&&e.hidden})()"
@@ -183,6 +220,8 @@ class Recorder:
         self.ff = None
         self.profile = None
         self.cap_id = None
+        self.cap_src = None
+        self.cast_frames = 0
         self.frames = 0
         self.dups = 0
         self.shot_ms = []
@@ -220,6 +259,9 @@ class Recorder:
             raise RuntimeError("Chrome DevTools did not come up on port %d" % port)
         self.cdp = CDP(ws)
         self.cdp.call("Emulation.setDeviceMetricsOverride", width=self.w, height=self.h, deviceScaleFactor=1, mobile=False)
+        self.cdp.call("Page.enable")
+        if self.a.capture == "screencast":
+            self.cdp.call("Page.startScreencast", format="jpeg", quality=88, maxWidth=self.w, maxHeight=self.h, everyNthFrame=1)
 
     def stop_chrome(self):
         if self.cdp:
@@ -285,6 +327,7 @@ class Recorder:
             except Exception:
                 pass
             self.cap_id = None
+        self.cap_src = caption_script(text, self.w, self.h) if text else None
         if text:
             self.cap_id = self.cdp.call("Page.addScriptToEvaluateOnNewDocument", source=caption_script(text, self.w, self.h))["identifier"]
 
@@ -293,11 +336,13 @@ class Recorder:
         Nothing here waits for the network to go idle (the MEMORY tab holds an event stream open)."""
         self.cdp.call("Page.navigate", url=url)
         t_end = time.time() + timeout
-        time.sleep(0.4)
+        self.cdp.pump(0.4)
         while time.time() < t_end:
             if self.cdp.js("document.readyState") in ("interactive", "complete") and self.cdp.js("location.href") not in (None, "about:blank"):
                 break
-            time.sleep(0.15)
+            self.cdp.pump(0.15)
+        if self.cap_src and not self.cdp.js("!!document.getElementById('__demo_cap')"):
+            self.cdp.js(self.cap_src)  # the document-start script did not run: put the caption in now
         ok = True
         if ready_js:
             ok = False
@@ -305,8 +350,10 @@ class Recorder:
                 if self.cdp.js(ready_js):
                     ok = True
                     break
-                time.sleep(0.2)
-        time.sleep(settle)
+                self.cdp.pump(0.2)
+        self.cdp.pump(settle)
+        if self.cap_src and not self.cdp.js("!!document.getElementById('__demo_cap')"):
+            log("WARNING: caption bar missing on", url)
         return ok
 
     def shot(self):
@@ -325,6 +372,8 @@ class Recorder:
         t0 = time.monotonic()
         next_tick = 1.0
         i = 0
+        frame, seen, truth_at = None, self.cdp.frame_n, -1.0
+        cast = self.a.capture == "screencast"
         while i < nframes:
             now = time.monotonic() - t0
             while pending and now >= pending[0][0]:
@@ -336,9 +385,14 @@ class Recorder:
                 except Exception as e:
                     log("tick error:", e)
             wait = i / float(self.fps) - (time.monotonic() - t0)
-            if wait > 0:
-                time.sleep(wait)
-            frame = self.shot()
+            self.cdp.pump(wait)
+            now = time.monotonic() - t0
+            if cast and frame is not None and self.cdp.frame_n != seen:  # the page repainted: Chrome already sent the picture
+                frame, seen = base64.b64decode(self.cdp.frame), self.cdp.frame_n
+                self.cast_frames += 1
+            elif not cast or frame is None or now - truth_at >= 0.5:  # still page (or first frame): a real screenshot
+                frame, truth_at = self.shot(), now
+                seen = self.cdp.frame_n
             self.ff.stdin.write(frame)
             i += 1
             behind = int((time.monotonic() - t0) * self.fps) - i  # slots missed by a slow capture: repeat the frame
@@ -381,27 +435,30 @@ class Recorder:
     def run(self):
         a = self.a
         fps = self.fps
-        arc_done, arc_live = pick_runs(a.arc)
-        toy_done, toy_live = pick_runs(a.toys)
-        arc_banks, toy_banks = bank_counts(a.arc), bank_counts(a.toys)
-        log("arc finished run: %s | arc running run: %s" % ((arc_done or {}).get("_id"), (arc_live or {}).get("_id")))
+        base = a.arc
+        main, running, replayable = pick_runs(base, a.run)
+        rid = main["_id"] if main else None
+        log("run: %s (%s) | running run: %s" % (rid, (main or {}).get("status"), (running or {}).get("_id")))
 
         secs = {k: v * a.seconds / 60.0 for k, v in WEIGHTS.items()}
         if a.no_title:
             secs["replay"] += secs.pop("title")
-        replay_base, replay_run = (a.arc, arc_done) if arc_done else ((a.toys, toy_done) if toy_done else (a.arc, None))
-        if not replay_run and not arc_live:
-            log("no finished and no running run anywhere: LIVE PLAY will show the idle page")
-        if not arc_live or not replay_run:  # one LIVE PLAY segment instead of two
-            if replay_run:
-                secs["replay"] += secs.pop("live")
-            else:
-                secs["live"] = secs.pop("replay") + secs.get("live", 0)
-        mem_base = a.arc if (arc_banks.get("notes") or not toy_banks.get("notes")) else a.toys
-        mem_banks = arc_banks if mem_base == a.arc else toy_banks
-        log("memory tab from %s (notes %s, lessons %s)" % (mem_base, mem_banks.get("notes"), mem_banks.get("lessons")))
+        if not (main and replayable):  # nothing to replay: one LIVE PLAY segment
+            if not running:
+                log("no finished and no running run: LIVE PLAY will show the idle page")
+            secs["live"] += secs.pop("replay")
+        elif not running:  # nothing in flight: the replay runs longer
+            secs["replay"] += secs.pop("live")
 
-        order = [k for k in ("title", "replay", "live", "memory", "evo_arc", "evo_toys") if k in secs]
+        mem_rid = rid
+        if rid and not any(bank_n(base, b, rid) for b in ("notes", "lessons", "rulebooks")):
+            log("memory: nothing stored for run %s, showing every run" % rid)
+            mem_rid = None
+        first = "notes" if bank_n(base, "notes", mem_rid) else "rulebooks"
+        second = "lessons" if bank_n(base, "lessons", mem_rid) else ("rulebooks" if first != "rulebooks" else "generations")
+        log("memory: %s then %s, run filter %s" % (first, second, mem_rid))
+
+        order = [k for k in ("title", "replay", "live", "memory", "evo") if k in secs]
         total_frames = int(round(a.seconds * fps))
         frames, acc, used = {}, 0.0, 0
         for k in order:  # cumulative rounding: the parts add up to exactly total_frames
@@ -413,6 +470,7 @@ class Recorder:
         self.start_chrome()
         self.start_ffmpeg(total_frames)
         t_start = time.time()
+        q = urllib.parse.quote
 
         if "title" in frames:
             self.goto(title_url(CAPTIONS["title"], self.w, self.h), settle=0.6)
@@ -420,64 +478,67 @@ class Recorder:
 
         if "replay" in frames:
             self.set_caption(CAPTIONS["replay"])
-            n = replay_run.get("n_actions") or 0
+            n = main.get("n_actions") or 0
             dur = frames["replay"] / float(fps)
-            want = n * 0.3 / max(1.0, dur - 2.0)  # about 0.3 s per action at 1x
+            want = n * 0.3 / max(1.0, dur - 2.0) if n else 4  # about 0.3 s per action at 1x
             speed = a.replay_speed or min(SPEEDS, key=lambda s: abs(s - want))
-            url = "%s/?run=%s&mode=replay&speed=%d" % (replay_base, urllib.parse.quote(replay_run["_id"]), speed)
-            if not self.goto(url, JS_BOARD_READY, settle=2.0):
-                log("replay: the board did not report ready in time, recording anyway")
+            url = "%s/?run=%s&mode=replay&speed=%d" % (base, q(rid), speed)
+            # also wait (bounded) for the page's own memory panel, which fills a few seconds after the board
+            ready = "(%s)&&document.querySelector('#memBanks').children.length>0" % JS_BOARD_READY
+            if not self.goto(url, ready, settle=1.5, timeout=14.0):
+                log("replay: the board or its memory panel was not ready in time, recording anyway")
             st = {"speed": speed}
             self.record("replay", frames["replay"], actions=[(0.5, click("#btnPlay"))], tick=self.replay_tick(st))
 
         if "live" in frames:
-            self.set_caption(CAPTIONS["live"] if arc_live else CAPTIONS["replay"])
-            url = a.arc + ("/?run=" + urllib.parse.quote(arc_live["_id"]) if arc_live else "/")
+            self.set_caption(CAPTIONS["live"] if running else CAPTIONS["replay"])
+            url = base + ("/?run=" + q(running["_id"]) if running else "/")  # ?run= with no mode follows a running game live
             if not self.goto(url, JS_BOARD_READY, settle=2.5):
                 log("live: the board did not report ready in time, recording anyway")
             self.record("live", frames["live"])
 
         if "memory" in frames:
             self.set_caption(CAPTIONS["memory"])
-            first = "notes" if mem_banks.get("notes") else "rulebooks"
-            second = "lessons" if mem_banks.get("lessons") else "rulebooks"
-            self.goto("%s/?tab=memory&bank=%s" % (mem_base, first), "!!document.querySelector('.mem-card')", settle=1.5)
+            url = "%s/?tab=memory&bank=%s%s" % (base, first, "&run_id=" + q(mem_rid) if mem_rid else "")
+            if not self.goto(url, "!!document.querySelector('.mem-card')", settle=1.5):
+                log("memory: no document card appeared in time, recording anyway")
             d = frames["memory"] / float(fps)
-            acts = [(d * 0.36, click('.mem-tile[data-bank="%s"]' % second)),
-                    (d * 0.62, click(".mem-list .mem-card .mem-rawbtn"))]
+            # RAW DOCUMENT on the first card; if the run filter left the bank empty, drop the filter first
+            raw = ("(function(){function go(){var b=document.querySelector('.mem-list .mem-card .mem-rawbtn');if(b){b.click();return true}return false}"
+                   "if(!go()){var x=document.querySelector('.mem-runx');if(x){x.click();setTimeout(go,900)}}})()")
+            acts = [(d * 0.36, click('.mem-tile[data-bank="%s"]' % second)), (d * 0.60, raw)]
             self.record("memory", frames["memory"], actions=acts)
 
-        scroll = ("(function(){var e=document.querySelector(%s);if(e&&e.scrollHeight>e.clientHeight+20)"
-                  "e.scrollBy({top:Math.min(e.scrollHeight-e.clientHeight,e.clientHeight*%s),behavior:'smooth'})})()")
-        if "evo_arc" in frames:
-            self.set_caption(CAPTIONS["evo_arc"])
-            self.goto(a.arc + "/?tab=evolution", "document.querySelector('#genList').children.length>0", settle=2.0)
-            d = frames["evo_arc"] / float(fps)
-            acts = [(d * 0.40, scroll % (json.dumps("#genList"), "0.6")), (d * 0.68, scroll % (json.dumps("#lessons"), "0.7"))]
-            self.record("evo_arc", frames["evo_arc"], actions=acts)
-
-        if "evo_toys" in frames:
-            self.set_caption(CAPTIONS["evo_toys"])
-            self.goto(a.toys + "/?tab=evolution", "document.querySelector('#genList').children.length>0", settle=2.0)
-            d = frames["evo_toys"] / float(fps)
-            to_reverted = ("(function(){var l=document.querySelector('#genList');if(!l)return;for(var i=0;i<l.children.length;i++){"
-                           "if(/reverted/i.test(l.children[i].textContent)){l.children[i].scrollIntoView({block:'center',behavior:'smooth'});return true}}})()")
-            self.record("evo_toys", frames["evo_toys"], actions=[(d * 0.3, to_reverted)])
+        if "evo" in frames:
+            self.set_caption(CAPTIONS["evo"])
+            url = "%s/?tab=evolution%s" % (base, "&run=" + q(rid) if rid else "")
+            ready = "(function(){var m=document.querySelector('#tab-evolution');return !!m&&!m.hidden&&m.innerText.trim().length>300})()"
+            if not self.goto(url, ready, settle=2.0, timeout=8.0):
+                log("evolution: the tab did not fill in time, recording anyway")
+            d = frames["evo"] / float(fps)
+            # ids of the rebuilt tab are not relied on: scroll its first scrollable list a little, then swap the caption
+            scroll = ("(function(){var l=document.querySelectorAll('#tab-evolution .scroll');for(var i=0;i<l.length;i++){var e=l[i];"
+                      "if(e.scrollHeight>e.clientHeight+20){e.scrollBy({top:Math.min(e.scrollHeight-e.clientHeight,e.clientHeight*0.6),behavior:'smooth'});return true}}})()")
+            swap = "(function(){var c=document.getElementById('__demo_cap');if(c)c.textContent=%s})()" % json.dumps(CAPTIONS["evo2"])
+            self.record("evo", frames["evo"], actions=[(d * 0.28, scroll), (d * 0.5, swap)])
 
         took = time.time() - t_start
-        ms = sorted(self.shot_ms)
-        log("captured %d frames in %.1f s wall (%d repeated to keep time; screenshot median %.0f ms, p95 %.0f ms)"
-            % (self.frames, took, self.dups, ms[len(ms) // 2], ms[int(len(ms) * 0.95)]))
+        ms = sorted(self.shot_ms) or [0]
+        log("wrote %d frames in %.1f s wall: %d screencast frames, %d screenshots (median %.0f ms), %d slots repeated because a capture ran late"
+            % (self.frames, took, self.cast_frames, len(self.shot_ms), ms[len(ms) // 2], self.dups))
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", required=True, help="output .mp4")
-    ap.add_argument("--arc", default="http://127.0.0.1:8788", help="dashboard on the real ARC-AGI-3 database")
-    ap.add_argument("--toys", default="http://127.0.0.1:8787", help="dashboard on the toy suite with held-out validation")
+    ap.add_argument("--arc", default="http://127.0.0.1:8788", help="base URL of the dashboard to record")
+    ap.add_argument("--run", default="", help="run id to show (default: the best finished run in /api/runs)")
+    ap.add_argument("--toys", default="", help="accepted for compatibility, unused")
     ap.add_argument("--seconds", type=float, default=60.0, help="length of the video")
     ap.add_argument("--size", default="1920x1080", help="WIDTHxHEIGHT")
     ap.add_argument("--fps", type=int, default=10, help="capture rate (the file is written at 30 fps when this divides 30)")
+    ap.add_argument("--capture", default="screencast", choices=["screencast", "screenshot"],
+                    help="screencast: frames pushed by Chrome as the page repaints, screenshots while it is still; screenshot: one Page.captureScreenshot per frame (slower)")
     ap.add_argument("--replay-speed", type=int, default=0, choices=[0] + SPEEDS, help="fix the replay speed (0: adapt so the game ends with the segment)")
     ap.add_argument("--no-title", action="store_true", help="skip the 2 s title card")
     ap.add_argument("--chrome", default=CHROME)
@@ -488,7 +549,7 @@ def main():
     except ValueError:
         ap.error("--size must look like 1920x1080")
     args.w, args.h = w - w % 2, h - h % 2  # H.264 4:2:0 needs even sides
-    args.arc, args.toys = args.arc.rstrip("/"), args.toys.rstrip("/")
+    args.arc = args.arc.rstrip("/")
     if args.fps < 1 or args.seconds <= 0:
         ap.error("--fps and --seconds must be positive")
 

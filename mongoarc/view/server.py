@@ -88,9 +88,14 @@ def actions(run_id: str, after_n: int = -1, limit: int = Query(200, ge=1, le=500
 
 
 @app.get("/api/runs/{run_id}/events")
-def events(run_id: str, after_seq: int = 0, limit: int = Query(500, ge=1, le=2000)):
-    """Timeline events with seq > after_seq, ascending."""
-    cur = _db()[D.EVENTS].find({"run_id": run_id, "seq": {"$gt": after_seq}}).sort("seq", 1).limit(limit)
+def events(run_id: str, after_seq: int = 0, limit: int = Query(500, ge=1, le=2000), kind: str = ""):
+    """Timeline events with seq > after_seq, ascending. kind=recall,harness keeps only those kinds: how the
+    evolution tab counts, per level, the agent's memory searches and the harness's prompts to search."""
+    match: dict = {"run_id": run_id, "seq": {"$gt": after_seq}}
+    kinds = [k for k in kind.split(",") if k]
+    if kinds:
+        match["kind"] = {"$in": kinds}
+    cur = _db()[D.EVENTS].find(match).sort("seq", 1).limit(limit)
     return _json(list(cur))
 
 
@@ -100,10 +105,12 @@ def rulebooks(run_id: str):
 
 
 @app.get("/api/generations")
-def generations():
-    return _json(list(_db()[D.GENERATIONS].find({}).sort("_id", 1)))
+def generations(run_id: str = ""):
+    """Every generation, or one run's lineage (generations are per run: a new one each time a level is cleared)."""
+    return _json(list(_db()[D.GENERATIONS].find({"run_id": run_id} if run_id else {}).sort("_id", 1)))
 
 
 @app.get("/api/lessons")
-def lessons():
-    return _json(list(_db()[D.LESSONS].find({}).sort("_id", 1)))
+def lessons(run_id: str = ""):
+    """Every lesson, or the lessons one run learned from its own levels."""
+    return _json(list(_db()[D.LESSONS].find({"run_id": run_id} if run_id else {}).sort("_id", 1)))

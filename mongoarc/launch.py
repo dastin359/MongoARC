@@ -1,13 +1,18 @@
-"""Launch one game through the unmodified CCARC driver, under a harness generation.
+"""Launch one game through the unmodified CCARC driver; the harness evolves per level inside it.
 
-    python -m mongoarc.launch --game G --out-dir D [--gen N] [--agent fake|claude]
-        [--arc-root URL] [--model M] [--effort E] [--timeout S] [--label L] [--pause 0.2] [--dry-run]
+    python -m mongoarc.launch --game G --out-dir D [--agent fake|claude] [--distiller claude|heuristic]
+        [--distill-model M] [--arc-root URL] [--model M] [--effort E] [--timeout S] [--label L]
+        [--pause 0.2] [--no-memory] [--dry-run]
 
-Registers the run in MongoDB before the game starts, appends the generation's
-addendum to the workspace CLAUDE.md by wrapping CCARC's build_workspace in
-process, gives the agent `memory.py` and a loopback memory gateway, runs the
-game, then records how it ended. Nothing under CCARC/ is edited: the agent's
-prompt is changed in the workspace copy only.
+Every launch is its own lineage: the run starts at generation k=0 with an empty
+memory, and nothing is carried in from any other game or run. Registers the run
+in MongoDB before the game starts, appends the generation's lessons section to
+the workspace CLAUDE.md by wrapping CCARC's build_workspace in process, gives
+the agent `memory.py` and a loopback memory gateway that searches this run
+only, and starts the level evolver (evolve/levels.py), which stores a new
+generation for this run each time a level is cleared. Then it runs the game
+and records how it ended. Nothing under CCARC/ is edited: the agent's prompt
+is changed in the workspace copy only.
 """
 from __future__ import annotations
 
@@ -38,6 +43,8 @@ HARNESS_ONLY_ENV = ("MONGODB_URI", "MONGO_DB", "MONGOARC_TEST_URI")
 # Never printed, logged or stored; only their presence is reported.
 SECRET_ENV = ("ARC_API_KEY", "ARCPRIZE_API_KEY", "MONGODB_URI", "MONGOARC_CLAUDE_OAUTH_TOKEN",
               "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
+# How long the launcher waits, after the game, for the levels already cleared to be distilled.
+EVOLVER_GRACE_S = 300.0
 # Child settings shown as values by --dry-run (none of them is a secret).
 SHOWN_ENV = ("CLAUDE_BINARY", "CLAUDE_CONFIG_DIR", "CCARC3_ARC_ROOT", "CCARC3_LIVE", "CCARC3_NETGUARD",
              "CCARC3_CONFINE", "CCARC3_CREDENTIAL_PROBE", "CCARC3_MAX_NUDGES", "CCARC3_HIDE_BASELINES",
@@ -101,14 +108,20 @@ def prepare_env(agent: str, arc_root: str | None, knobs: dict, pause: float) -> 
 
 
 def apply_generation(workspace: Path, gen: dict, addendum: str, memory_tool: bool = False) -> None:
-    """Append the addendum to CLAUDE.md and lay out what it describes: `scripts/` and `memory.py`.
+    """Put the addendum at the end of CLAUDE.md and lay out what it describes: `scripts/` and `memory.py`.
 
-    Nothing else is copied in: every game starts from a fresh workspace, and
-    what carries over is reached through memory.py (docs/SCHEMA.md).
+    If CLAUDE.md already holds a marked lessons section it is replaced in
+    place, so calling this twice never leaves two. Nothing else is copied in:
+    every game starts from a fresh workspace and an empty memory.
     """
     workspace = Path(workspace)
     doc = workspace / "CLAUDE.md"
-    doc.write_text(doc.read_text(encoding="utf-8").rstrip("\n") + "\n" + addendum, encoding="utf-8")
+    text = doc.read_text(encoding="utf-8")
+    try:
+        text = genome.replace_section(text, addendum)
+    except ValueError:                            # an addendum without markers: plain append
+        text = text.rstrip("\n") + "\n" + addendum
+    doc.write_text(text, encoding="utf-8")
     (workspace / "scripts").mkdir(exist_ok=True)
     if memory_tool:
         shutil.copyfile(MEMORY_TOOL, workspace / "memory.py")
@@ -164,17 +177,33 @@ def _write_marker(path: Path, marker: dict) -> None:
     os.replace(tmp, path)
 
 
+def _marker_run(marker_path: Path, game: str) -> str | None:
+    """The run id an earlier launch left in this attempt directory, if it was for the same game."""
+    try:
+        old = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return old.get("run_id") if isinstance(old, dict) and old.get("game_id") == game else None
+
+
 def launch(args: argparse.Namespace) -> dict:
     db = D.get_db()
     D.ensure_indexes(db)
-    gen = genome.get(db, args.gen) if args.gen is not None else genome.active(db)
-    prepare_env(args.agent, args.arc_root, gen.get("knobs") or {}, args.pause)
+    dry = bool(getattr(args, "dry_run", False))
+    if args.role == "control":                    # a control run has no memory tool and no level lessons
+        args.no_memory = True
+    use_memory = not args.no_memory
+    out_dir = Path(args.out_dir).resolve()
+    marker_path = out_dir / D.RUN_MARKER
+    # A relaunch into the same attempt directory resumes that run, lineage included.
+    run_id = args.run_id or _marker_run(marker_path, args.game)
+    earlier = genome.active(db, run_id) if run_id else None
+    knobs = (earlier or {}).get("knobs") or dict(genome.DEFAULT_KNOBS)
+    prepare_env(args.agent, args.arc_root, knobs, args.pause)
 
     from ccarc.arc_3 import session as S
     from ccarc.arc_3.client import GameInfo, list_games
 
-    dry = bool(getattr(args, "dry_run", False))
-    out_dir = Path(args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     workspace = out_dir / args.game
     model = args.model or ("fake" if args.agent == "fake" else S.DEFAULT_MODEL)
@@ -189,36 +218,34 @@ def launch(args: argparse.Namespace) -> dict:
         info, lookup_error = None, redact(f"game list unavailable: {type(exc).__name__}: {exc}")[:500]
     baseline = [int(b) for b in info.baseline_actions] if info else []
 
-    # Lessons that name this game would be the agent reading about its own earlier attempts.
-    carried = genome.lessons_of(db, gen)
-    lessons = [l for l in carried if l.get("status") == "active" and genome.clean_lesson(l["text"], args.game)]
-    lesson_ids = [l["_id"] for l in lessons]
-
-    marker_path = out_dir / D.RUN_MARKER
-    run_id, resumed = args.run_id, False
-    if not run_id and marker_path.exists():      # relaunch into the same attempt dir resumes the run
-        try:
-            old = json.loads(marker_path.read_text(encoding="utf-8"))
-        except ValueError:
-            old = {}
-        run_id = old.get("run_id") if old.get("game_id") == args.game else None
+    resumed = False
     t0 = D.now()
     fields = {"game_id": args.game, "out_dir": str(out_dir), "label": args.label, "agent": args.agent,
-              "model": model, "effort": effort, "generation": gen["_id"], "lessons_used": lesson_ids,
-              "baseline_actions": baseline or None, "status": "running", "started_at": t0, "updated_at": t0,
-              "ended_at": None, "win_levels": len(baseline) or None, "memory_tool": not args.no_memory,
-              "role": args.role or ("control" if args.no_memory else "train")}
-    base_id = f"g{gen['_id']}-{args.game}-{t0.strftime('%Y%m%dT%H%M%S')}"
+              "model": model, "effort": effort, "baseline_actions": baseline or None, "status": "running",
+              "started_at": t0, "updated_at": t0, "ended_at": None, "win_levels": len(baseline) or None,
+              "memory_tool": use_memory, "role": args.role or ("train" if use_memory else "control"),
+              "distiller": args.distiller if use_memory else None}
+    base_id = f"{args.game}-{t0.strftime('%Y%m%dT%H%M%S')}"
     if dry:
         run_id = run_id or base_id
-    elif run_id:
-        resumed = True
-        keep = () if baseline else ("baseline_actions", "win_levels")   # a failed lookup must not blank them
-        db[D.RUNS].update_one({"_id": run_id}, {"$set": {k: v for k, v in fields.items() if k not in keep},
-                                                "$setOnInsert": {"n_actions": 0, "result": None, "metrics": None}},
-                              upsert=True)
+        gen = earlier or {**genome.gen0(run_id, args.game, use_memory), "_id": None}
     else:
-        run_id = claim_run_id(db, base_id, fields)   # before the marker, so two launches never share an id
+        if run_id:
+            resumed = True
+            keep = () if baseline else ("baseline_actions", "win_levels")   # a failed lookup must not blank them
+            db[D.RUNS].update_one({"_id": run_id}, {"$set": {k: v for k, v in fields.items() if k not in keep},
+                                                    "$setOnInsert": {"n_actions": 0, "result": None, "metrics": None}},
+                                  upsert=True)
+        else:                                     # before the marker, so two launches never share an id
+            run_id = claim_run_id(db, base_id, {**fields, "generation": None, "gen_k": 0, "lessons_used": []})
+        # The run's own lineage: generation 0, empty, unless this is a resume of a run that has evolved.
+        genome.ensure_run_gen0(db, run_id, args.game, use_memory)
+        gen = genome.active(db, run_id)
+    lessons = [l for l in genome.lessons_of(db, gen) if l.get("status") == "active"]
+    lesson_ids = [l["_id"] for l in lessons]
+    if not dry:
+        db[D.RUNS].update_one({"_id": run_id}, {"$set": {"generation": gen["_id"], "gen_k": gen["k"],
+                                                         "lessons_used": lesson_ids}})
     marker = {"run_id": run_id, "game_id": args.game, "generation": gen["_id"], "lessons_used": lesson_ids,
               "agent": args.agent, "model": model, "effort": effort, "baseline_actions": baseline or None,
               "label": args.label}
@@ -231,19 +258,24 @@ def launch(args: argparse.Namespace) -> dict:
                                                          "updated_at": D.now(), "result": result}})
         harness_event(db, run_id, "run_ended", f"lost: the game never started ({lookup_error})", status="lost",
                       error=lookup_error, launch_error=lookup_error, generation=gen["_id"])
-        out = {"run_id": run_id, "generation": gen["_id"], "status": "lost", "lessons_used": lesson_ids,
-               "out_dir": str(out_dir), "result": result}
+        out = {"run_id": run_id, "generation": gen["_id"], "gen_k": gen["k"], "status": "lost",
+               "lessons_used": lesson_ids, "out_dir": str(out_dir), "result": result}
         print(json.dumps(out, indent=2), flush=True)
         return out
 
-    memory, memory_url = (None, None) if args.no_memory else start_memory()
+    memory, memory_url = start_memory() if use_memory else (None, None)
     addendum = genome.render_addendum(gen, lessons, memory=memory is not None)
+    if not dry and addendum != gen.get("addendum"):   # the stored section is the one the agent is given
+        db[D.GENERATIONS].update_one({"_id": gen["_id"]}, {"$set": {"addendum": addendum}})
 
     original = S.build_workspace
 
     def build_workspace(config, info=None, **kw):
         ws = original(config, info, **kw)
-        apply_generation(ws.root, gen, addendum, memory_tool=memory is not None)
+        # Read at call time: if CCARC rebuilds the workspace mid-game, it gets the lessons as they stand then.
+        now_gen = (genome.active(db, run_id) if not dry else None) or gen
+        apply_generation(ws.root, now_gen, now_gen.get("addendum") if now_gen is not gen else addendum,
+                         memory_tool=memory is not None)
         child_env(ws.env, run_id, memory_url)
         return ws
 
@@ -255,9 +287,11 @@ def launch(args: argparse.Namespace) -> dict:
 
     if dry:
         report = {"dry_run": True, "run_id": run_id, "game_id": args.game, "generation": gen["_id"],
-                  "lessons_used": lesson_ids, "agent": args.agent, "model": model, "effort": effort,
-                  "out_dir": str(out_dir), "baseline_levels": len(baseline), "game_lookup": lookup_error or "ok",
-                  "memory_tool": memory is not None, "knobs": settings}
+                  "gen_k": gen["k"], "lessons_used": lesson_ids, "agent": args.agent, "model": model,
+                  "effort": effort, "out_dir": str(out_dir), "baseline_levels": len(baseline),
+                  "game_lookup": lookup_error or "ok", "memory_tool": memory is not None,
+                  "level_evolver": use_memory, "distiller": args.distiller if use_memory else None,
+                  "knobs": settings}
         try:
             ws = build_workspace(config, info or GameInfo(game_id=args.game))
             report["claude_md"] = str(ws.root / "CLAUDE.md")
@@ -271,25 +305,30 @@ def launch(args: argparse.Namespace) -> dict:
         print(redact(json.dumps(report, indent=2)), flush=True)
         return {"status": "dry-run", **report}
 
-    coach, collector, error, result = None, None, None, None
+    coach, evolver, collector, error, result = None, None, None, None, None
     try:                                          # from here on the run exists: whatever happens, it gets an ending
-        # Keep the stored addendum equal to what a run under this generation is given.
-        if len(lessons) == len(carried) and addendum != gen.get("addendum"):
-            db[D.GENERATIONS].update_one({"_id": gen["_id"]}, {"$set": {"addendum": addendum}})
         _write_marker(marker_path, marker)
         harness_event(db, run_id, "run_started",
-                      f"{args.game} {'resumed' if resumed else 'launched'} under harness generation {gen['_id']} "
-                      f"({len(lesson_ids)} lessons, agent {args.agent})",
-                      knobs=gen.get("knobs"), generation=gen["_id"])
-        harness_event(db, run_id, "lessons_injected",
-                      "\n".join(f"{l['_id']} [{l['kind']}] {l['text']}" for l in lessons) or "no lessons carried",
-                      lesson_ids, generation=gen["_id"],
-                      items=[{"id": l["_id"], "kind": l["kind"], "text": l["text"]} for l in lessons])
+                      f"{args.game} {'resumed' if resumed else 'launched'} at harness generation k={gen['k']} "
+                      f"({len(lesson_ids)} lessons, agent {args.agent}, "
+                      + (f"level evolver: {args.distiller} distiller)" if use_memory
+                         else "control: no memory tool, no level lessons)"),
+                      knobs=gen.get("knobs"), generation=gen["_id"], k=gen["k"])
+        if lessons:                               # a resumed run: its lessons are in the rebuilt CLAUDE.md
+            harness_event(db, run_id, "lessons_injected",
+                          "\n".join(f"{l['_id']} [{l['kind']}] {l['text']}" for l in lessons), lesson_ids,
+                          generation=gen["_id"], k=gen["k"],
+                          items=[{"id": l["_id"], "kind": l["kind"], "text": l["text"]} for l in lessons])
         S.build_workspace = build_workspace      # run_game resolves the name at call time
-        coach = Coach(db, run_id, out_dir, workspace, lesson_ids, baseline, settings["coach_stuck_factor"],
+        coach = Coach(db, run_id, out_dir, workspace, baseline, settings["coach_stuck_factor"],
                       interval=args.coach_interval)
         collector = _start_collector(db, out_dir) if args.collect else None
         coach.start()
+        if use_memory:
+            from mongoarc.evolve.levels import LevelEvolver
+            evolver = LevelEvolver(db, run_id, args.game, out_dir, workspace, baseline, kind=args.distiller,
+                                   model=args.distill_model, memory=memory is not None)
+            evolver.start()
         result = S.run_game(config, info)
     except BaseException as exc:  # noqa: BLE001 -- the run document must not be left "running"
         error = exc
@@ -299,6 +338,12 @@ def launch(args: argparse.Namespace) -> dict:
         S.build_workspace = original
         if coach is not None:
             coach.stop()
+        if evolver is not None:                   # finishes the levels already cleared, the last one included
+            try:
+                if not evolver.stop(timeout=EVOLVER_GRACE_S):
+                    print("    evolver: still distilling after the grace period; left behind", flush=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"    evolver: {type(exc).__name__}: {exc}", flush=True)
         if memory is not None:
             memory.shutdown()
 
@@ -329,8 +374,9 @@ def launch(args: argparse.Namespace) -> dict:
     if collector is not None:
         collector[0].set()                        # run_forever makes one final pass after the stop
         collector[1].join(timeout=30)
-    out = {"run_id": run_id, "generation": gen["_id"], "status": status, "lessons_used": lesson_ids,
-           "out_dir": str(out_dir), "result": D.jsonable(stored)}
+    last = genome.active(db, run_id) or gen
+    out = {"run_id": run_id, "generation": last["_id"], "gen_k": last.get("k"), "status": status,
+           "lessons_used": last.get("lessons") or [], "out_dir": str(out_dir), "result": D.jsonable(stored)}
     print(json.dumps(out, indent=2), flush=True)
     if error is not None and not isinstance(error, Exception):
         raise error                               # KeyboardInterrupt / SystemExit
@@ -356,7 +402,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m mongoarc.launch", description=__doc__.split("\n\n")[0])
     p.add_argument("--game", required=True)
     p.add_argument("--out-dir", required=True, help="attempt directory (one game per directory)")
-    p.add_argument("--gen", type=int, default=None, help="harness generation (default: the active one)")
+    p.add_argument("--gen", type=int, default=None,
+                   help="ignored: every launch starts its own lineage at generation k=0")
+    p.add_argument("--distiller", choices=("claude", "heuristic"), default="claude",
+                   help="what turns a cleared level into lessons: one CLI call, or no model")
+    p.add_argument("--distill-model", default=None,
+                   help="model for --distiller claude (default $MONGOARC_DISTILL_MODEL or claude-sonnet-5-5)")
     p.add_argument("--agent", choices=("fake", "claude"), default="claude")
     p.add_argument("--arc-root", default=None, help="ARC API root; unset means the real service")
     p.add_argument("--model", default=None)
@@ -368,10 +419,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--coach-interval", type=float, default=1.0)
     p.add_argument("--collect", action="store_true", help="also run the collector in this process")
     p.add_argument("--role", choices=("train", "validation", "control"), default=None,
-                   help="train: evidence for the distiller (default). validation: scores a generation on a held-out "
-                        "game. control: a baseline arm. Only train runs feed later games' memory.")
+                   help="train: the harness evolves per level (default). control: the baseline arm, implies "
+                        "--no-memory. validation is accepted for old callers and behaves as train.")
     p.add_argument("--no-memory", action="store_true",
-                   help="control arm: no memory.py in the workspace and no memory section in the prompt")
+                   help="control arm: no memory.py, no memory section in the prompt, no level evolver "
+                        "(the run stays at generation k=0)")
     p.add_argument("--dry-run", action="store_true",
                    help="build the workspace and print what the agent would be given (prompt path, child "
                         "environment with secrets shown as present/absent); no game, nothing written to MongoDB")

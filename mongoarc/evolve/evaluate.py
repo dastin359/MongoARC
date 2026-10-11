@@ -1,4 +1,4 @@
-"""Score runs, generations and lessons from what the collector stored."""
+"""Score a run from what the collector stored, and read its per-level curve."""
 from __future__ import annotations
 
 from typing import Any, Iterable
@@ -92,37 +92,13 @@ def evaluate_run(db: Database, run_id: str) -> dict[str, Any]:
     return metrics
 
 
-def update_fitness(db: Database, gen: int) -> dict[str, Any]:
-    """Aggregate the metrics of every evaluated run of a generation into its fitness."""
-    agg = list(db[D.RUNS].aggregate([
-        {"$match": {"generation": gen, "metrics": {"$ne": None}}},
-        {"$sort": {"started_at": 1}},
-        {"$group": {"_id": "$generation", "runs": {"$push": "$_id"},
-                    "mean_efficiency": {"$avg": "$metrics.efficiency"},
-                    "mean_completion": {"$avg": "$metrics.completion"}}}]))
-    fit = {"runs": [], "mean_efficiency": None, "mean_completion": None}
-    if agg:
-        a = agg[0]
-        fit = {"runs": a["runs"],
-               "mean_efficiency": None if a["mean_efficiency"] is None else round(a["mean_efficiency"], 4),
-               "mean_completion": None if a["mean_completion"] is None else round(a["mean_completion"], 4)}
-    db[D.GENERATIONS].update_one({"_id": gen}, {"$set": {"fitness": fit}})
-    return fit
+def level_curve(db: Database, run_id: str) -> list[dict[str, Any]]:
+    """The hard metric: per level of one game, actions against the baseline and the generation it was played under.
 
-
-def credit(db: Database, run_id: str) -> list[str]:
-    """Add this run's outcome to the stats of each lesson it carried (once per run)."""
-    run = db[D.RUNS].find_one({"_id": run_id}, projection={"lessons_used": 1, "metrics": 1, "status": 1})
-    if run is None or not run.get("metrics"):
-        return []
-    eff = float(run["metrics"].get("efficiency") or 0.0)
-    res = []
-    for lid in run.get("lessons_used") or []:
-        r = db[D.LESSONS].update_one(
-            {"_id": lid, "stats.runs": {"$ne": run_id}},
-            {"$push": {"stats.runs": run_id},
-             "$inc": {"stats.injected": 1, "stats.efficiency_sum": eff,
-                      "stats.wins": 1 if run.get("status") == "won" else 0}})
-        if r.modified_count:
-            res.append(lid)
-    return res
+    Read from the run's own generation lineage (`played` is filled in when the
+    level is cleared), so a level still in progress is not in the curve.
+    """
+    out = []
+    for g in db[D.GENERATIONS].find({"run_id": run_id, "played": {"$ne": None}}).sort("k", 1):
+        out.append({**g["played"], "k": g.get("k"), "generation": g["_id"], "lessons": len(g.get("lessons") or [])})
+    return out

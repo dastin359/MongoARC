@@ -58,7 +58,7 @@ a.run:hover { color: #fff; }
 
 /* tab 1 */
 .live { display: grid; grid-template-columns: auto minmax(270px, .9fr) minmax(300px, 1.15fr); gap: 10px; padding: 10px; min-height: 0; }
-.stage { --board: min(calc(100vh - 44px - 20px - 38px - 44px - 24px - var(--pad-h)), 52vw); --pad-h: 92px; width: var(--board); display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.stage { --board: min(calc(100vh / var(--ui, 1) - 44px - 20px - 38px - 44px - 24px - var(--pad-h)), calc(52vw / var(--ui, 1))); --pad-h: 92px; width: var(--board); display: flex; flex-direction: column; gap: 8px; min-height: 0; }
 .stagehead { height: 38px; display: flex; align-items: center; gap: 10px; min-width: 0; }
 .game { font: 700 24px var(--mono); letter-spacing: -.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 0 auto; min-width: 5ch; max-width: 50%; }
 .stagehead .chip { flex: none; }
@@ -179,7 +179,7 @@ a.run:hover { color: #fff; }
 /* tab 2 */
 .evo { display: grid; grid-template-columns: minmax(330px, .8fr) minmax(0, 1.5fr); gap: 10px; padding: 10px; min-height: 0; }
 .evoright { display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 10px; min-height: 0; min-width: 0; }
-.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.tiles { display: grid; grid-template-columns: 1.05fr .75fr .85fr 1.75fr 1.55fr; gap: 10px; }
 .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px 9px; min-width: 0; }
 .tile .num { font: 700 clamp(26px, 2.8vw, 42px)/1.2 var(--mono); letter-spacing: -.03em; white-space: nowrap; }
 .tile .num { overflow: hidden; text-overflow: ellipsis; }
@@ -276,3 +276,49 @@ details.add pre { margin: 5px 0 0; padding: 7px 9px; background: #05070a; border
 .mnote .mh { display: flex; justify-content: space-between; gap: 8px; font: 700 11px var(--mono); color: #1E93FF; margin-bottom: 3px; }
 .mnote .mh span { color: var(--ink3); }
 .mnote pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: 400 12px/1.45 var(--mono); color: var(--ink); max-height: 220px; overflow: hidden; }
+
+/* per-level evolution (tab 2 is about one run) and the new harness events */
+.chip.ctl { color: #000; background: var(--orange); border-color: var(--orange); }
+.evoscope { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-bottom: 1px solid var(--line); flex: none; min-width: 0; }
+.evoscope b { font: 700 17px var(--mono); letter-spacing: -.02em; white-space: nowrap; }
+.evoscope .rid { font: 500 11px var(--mono); color: var(--ink3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 0; min-width: 0; }
+.evoscope .chip { flex: none; }
+.evonote { margin: 10px; padding: 9px 11px; border: 1px solid var(--line); border-left: 3px solid var(--ink3); border-radius: 4px; background: var(--panel2); font-size: 13px; line-height: 1.45; color: var(--ink2); }
+.evonote.ctl { border-left-color: var(--orange); color: var(--ink); }
+.tile .num { font-size: clamp(24px, 2.5vw, 42px); white-space: normal; overflow: visible; }
+.tile .num.s2 { font-size: clamp(15px, 1.25vw, 24px); line-height: 1.9; }
+.tile .num.s2 small { font-size: 1em; color: var(--ink2); font-weight: 700; }
+.tile .num small { white-space: nowrap; }
+.tile .lbl { line-height: 1.35; }
+.gcard .when { font: 700 11px var(--mono); letter-spacing: .06em; color: var(--ink2); text-transform: uppercase; white-space: nowrap; }
+.diff > div { grid-template-columns: 66px minmax(0, 1fr); }
+.gcard .played { margin-top: 7px; padding: 5px 8px; background: var(--panel2); border: 1px solid var(--line); border-radius: 3px; font: 500 12px var(--mono); color: var(--ink); display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.gcard .played .k { color: var(--ink3); font-weight: 700; font-size: 10px; letter-spacing: .1em; }
+.gcard .played b { margin-left: auto; }
+.gcard .played small { color: var(--ink3); }
+.gcard .played.from { background: none; border-style: dashed; margin-top: 6px; }
+.gcard .played b.good { color: var(--green); } .gcard .played b.over { color: var(--orange); } .gcard .played b.bad { color: var(--red); }
+.legend .mute { color: var(--ink3); }
+.legend .gk { gap: 9px; color: var(--ink3); }
+.legend .gk span { gap: 4px; color: var(--ink2); }
+.legend i.x.c { filter: grayscale(1) brightness(2.2); }
+.tabs { flex: none; } .tabs button { white-space: nowrap; }
+.brand { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.legend i.x { width: 11px; height: 11px; background: linear-gradient(45deg, transparent 42%, var(--red) 42%, var(--red) 58%, transparent 58%), linear-gradient(-45deg, transparent 42%, var(--red) 42%, var(--red) 58%, transparent 58%); }
+.legend a.run { font-size: 11px; }
+.chart text.v { paint-order: stroke; stroke: var(--panel); stroke-width: 4px; stroke-linejoin: round; }
+.chart text.ok { fill: var(--green); font-weight: 700; }
+.chart text.z { fill: var(--red); font-weight: 700; }
+.chart .hit { cursor: default; }
+.lt .why.rev { color: var(--yellow); }
+.lt .evd .what { display: block; }
+.ev.harness.nudge { border-left-color: var(--purple); background: rgba(163,86,214,.16); box-shadow: inset 0 0 0 1px rgba(163,86,214,.4); }
+.ev.harness.nudge .meta b { color: #c99bea; }
+.ev .inj { margin-top: 3px; display: grid; gap: 3px; font-weight: 400; font-size: 13px; }
+.ev .inj .id { font: 700 11px var(--mono); color: var(--yellow); margin-right: 6px; }
+.ev .inj .kind { font: 700 9px var(--mono); letter-spacing: .08em; color: var(--ink3); border: 1px solid var(--line); border-radius: 2px; padding: 1px 4px; margin-right: 6px; text-transform: uppercase; white-space: nowrap; }
+/* memory tab: a run filter that cannot be missed, with its one-click way out */
+.memtab .mem-runf { max-width: none; height: 32px; padding: 0 4px 0 10px; gap: 8px; background: rgba(136,216,241,.14); font-weight: 700; }
+.memtab .mem-runf span { max-width: 27ch; }
+.memtab .mem-sub { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.memtab .mem-root .mem-runf button { font: 700 11px var(--mono); letter-spacing: .08em; color: #000; background: var(--cyan); border-radius: 3px; padding: 4px 8px; }

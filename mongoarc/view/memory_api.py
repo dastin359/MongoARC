@@ -2,7 +2,7 @@
 
 `router` is a fastapi.APIRouter the live view includes:
 
-    GET /api/memory/banks                     the four banks with live counts
+    GET /api/memory/banks?run_id=             the four banks with live counts (run_count: one run's documents)
     GET /api/memory/runs                      run_id -> {game_id, generation, status} (labels for cards)
     GET /api/memory/stream                    Server-Sent Events fed by a MongoDB change stream
     GET /api/memory/{bank}?limit=&q=&run_id=  documents, newest first
@@ -37,10 +37,10 @@ OPS = ("insert", "update", "replace", "delete")
 
 # label, one-line description, the field that says when a document last changed
 BANKS = {
-    D.LESSONS: ("LESSONS", "Game-independent lessons distilled across games.", "created_at"),
+    D.LESSONS: ("LESSONS", "What a cleared level taught, kept for the later levels of the same game only.", "created_at"),
     D.NOTES: ("NOTES", "The prose the agent writes while it plays, one document per file.", "updated_at"),
     D.RULEBOOKS: ("RULEBOOKS", "What each game's agent verified and refuted.", "at"),
-    D.GENERATIONS: ("GENERATIONS", "Versions of the harness itself.", "created_at"),
+    D.GENERATIONS: ("GENERATIONS", "Versions of the harness within one game: a new one per cleared level.", "created_at"),
 }
 # Fields the substring fallback searches when $text finds nothing (it matches whole words only).
 TEXT_FIELDS = {D.LESSONS: ["text", "tags", "_id", "kind"], D.NOTES: ["text", "path", "_id", "game_id"]}
@@ -73,10 +73,12 @@ def _sort(bank: str) -> list[tuple[str, int]]:
 def _run_filter(bank: str, run_id: str) -> dict:
     if not run_id:
         return {}
+    # Lessons and generations belong to one run (run_id). The other clauses match documents written before
+    # that, which named runs only as evidence or as the games a generation was scored on.
     if bank == D.LESSONS:
-        return {"$or": [{"evidence.run_id": run_id}, {"stats.runs": run_id}]}
+        return {"$or": [{"run_id": run_id}, {"evidence.run_id": run_id}, {"stats.runs": run_id}]}
     if bank == D.GENERATIONS:
-        return {"$or": [{"created_from_run": run_id}, {"fitness.runs": run_id}]}
+        return {"$or": [{"run_id": run_id}, {"created_from_run": run_id}, {"fitness.runs": run_id}]}
     return {"run_id": run_id}
 
 
@@ -87,13 +89,17 @@ def _bank_state(db, bank: str) -> tuple[int, object]:
 
 
 @router.get("/api/memory/banks")
-def banks():
+def banks(run_id: str = ""):
+    """count is the whole bank; with run_id each bank also says how many of its documents are that run's."""
     db = _db()
     out = []
     for name in D.MEMORY_BANKS:
         count, updated = _bank_state(db, name)
         label, description, _ = BANKS[name]
-        out.append({"name": name, "label": label, "description": description, "count": count, "updated_at": updated})
+        row = {"name": name, "label": label, "description": description, "count": count, "updated_at": updated}
+        if run_id:
+            row["run_count"] = db[name].count_documents(_run_filter(name, run_id))
+        out.append(row)
     return _json(out)
 
 

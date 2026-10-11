@@ -86,15 +86,16 @@
       var s = d.stats || {}, ev = d.evidence || [];
       return {
         head: '<span class="mem-id">' + esc(d._id) + "</span>" + chip(d.kind) + chip(d.status, "mem-st-" + d.status) +
-          kv("created in gen", d.created_gen) + (d.tags || []).map(function (t) { return '<span class="mem-tag">#' + esc(t) + "</span>"; }).join("") +
+          (d.level == null ? kv("created in gen", d.created_gen) : kv("learned after level", d.level)) + run(d.run_id) + (d.tags || []).map(function (t) { return '<span class="mem-tag">#' + esc(t) + "</span>"; }).join("") +
           when(d.created_at),
         body: '<p class="mem-big">' + esc(d.text) + "</p>" +
           (d.retired_reason ? '<p class="mem-why"><b>RETIRED</b>' + esc(d.retired_reason) + "</p>" : "") +
-          '<div class="mem-stats">' + stat(s.injected, "injected") + stat(s.wins, "wins") +
-          stat(s.injected ? num(s.efficiency_sum / s.injected) : "n/a", "mean efficiency") + stat(s.recalled, "recalled") +
-          stat((s.runs || []).length, "runs") + "</div>" +
-          sec("EVIDENCE  game / level / rule", ev.length ? ev.map(function (e) {
-            return '<div class="mem-evd"><span class="mem-eg">' + esc(e.game_id) + '</span><i>/</i><span class="mem-el">level ' + esc(e.level) +
+          '<div class="mem-stats">' + (d.run_id ? stat(s.recalled, "times the agent recalled it") :
+            stat(s.injected, "injected") + stat(s.wins, "wins") +
+            stat(s.injected ? num(s.efficiency_sum / s.injected) : "n/a", "mean efficiency") + stat(s.recalled, "recalled") +
+            stat((s.runs || []).length, "runs")) + "</div>" +
+          sec("EVIDENCE  level / rule", ev.length ? ev.map(function (e) {
+            return '<div class="mem-evd">' + (e.game_id ? '<span class="mem-eg">' + esc(e.game_id) + "</span><i>/</i>" : "") + '<span class="mem-el">level ' + esc(e.level) +
               '</span><i>/</i><span class="mem-er">' + esc(e.rule) + "</span>" + run(e.run_id) + "</div>";
           }).join("") : '<div class="mem-none">none recorded</div>')
       };
@@ -147,20 +148,24 @@
         return '<span class="mem-knob">' + esc(k) + " " + esc(c[0]) + " \u2192 " + esc(c[1]) + "</span>";
       }).join(""));
       row("TOOLS", ids(diff.added_tools, "mem-add", "+"));
-      var lessons = d.lessons || [], runs = fit.runs || [];
+      var lessons = d.lessons || [], runs = fit.runs || [], per = d.run_id != null;  // per: one lineage per run, a generation per cleared level
+      function lv(m) { return m ? m.actions + " / " + (m.baseline == null ? "?" : m.baseline) : "n/a"; }
       return {
-        head: '<span class="mem-id">GEN ' + esc(d._id) + "</span>" + chip(d.status, "mem-st-" + d.status) +
-          kv("parent", d.parent == null ? "none" : "gen " + d.parent) +
+        head: '<span class="mem-id">GEN ' + esc(per && d.k != null ? d.k : d._id) + "</span>" + chip(d.status, "mem-st-" + d.status) +
+          (per ? run(d.run_id) + kv(d.level == null ? "at" : "after level", d.level == null ? "launch" : d.level)
+            : kv("parent", d.parent == null ? "none" : "gen " + d.parent)) +
           (d.created_from_run ? '<span class="mem-kv">built from</span>' + run(d.created_from_run) : "") + when(d.created_at),
         body: '<div class="mem-gen"><div>' +
           sec("DIFF  against the parent", rows.length ? '<div class="mem-diff">' + rows.join("") + "</div>" : '<div class="mem-none">no change: the starting point</div>') +
           sec("RATIONALE", '<p class="mem-ratio">' + esc(d.rationale || "") + "</p>") + "</div><div>" +
-          sec("LESSONS CARRIED", lessons.length ? '<div class="mem-chips">' + lessons.map(function (l) {
+          sec(per ? "LESSONS ACTIVE  for the later levels of this game" : "LESSONS", lessons.length ? '<div class="mem-chips">' + lessons.map(function (l) {
             return '<span class="mem-lid">' + esc(l) + "</span>";
           }).join("") + "</div>" : '<div class="mem-none">none</div>', lessons.length) +
-          sec("FITNESS", '<div class="mem-stats">' + stat(num(fit.mean_efficiency), "mean efficiency") +
-            stat(num(fit.mean_completion), "mean completion") + stat(runs.length, "runs") + "</div>" +
-            (runs.length ? '<div class="mem-runs">' + runs.map(run).join("") + "</div>" : "")) +
+          (per ? sec("LEVELS  actions / human baseline", '<div class="mem-stats">' + stat(lv(d.level_metrics), "level that produced it") +
+            stat(lv(d.played), "level played under it") + "</div>")
+            : sec("FITNESS", '<div class="mem-stats">' + stat(num(fit.mean_efficiency), "mean efficiency") +
+              stat(num(fit.mean_completion), "mean completion") + stat(runs.length, "runs") + "</div>" +
+              (runs.length ? '<div class="mem-runs">' + runs.map(run).join("") + "</div>" : ""))) +
           sec("KNOBS  /  DISTILLER", '<div class="mem-stats">' + Object.keys(knobs).map(function (k) { return stat(knobs[k], k); }).join("") +
             "</div>" + '<div class="mem-kv">' + esc(dist.kind || "") + " " + esc(dist.model || "") +
             (dist.cost_usd == null ? "" : "  $" + esc(dist.cost_usd)) + ((d.tools || []).length ? "  tools: " + esc(d.tools.map(function (t) { return t.name; }).join(", ")) : "") + "</div>") +
@@ -271,8 +276,8 @@
     var b = S.bank, filtered = S.q || S.run;
     S.el.list.innerHTML = err
       ? '<div class="mem-empty mem-err"><b>' + esc(err) + "</b>Retrying every two seconds.</div>"
-      : '<div class="mem-empty"><b>' + (filtered ? "No document in db." + esc(b) + " matches." : "db." + esc(b) + " is empty.") + "</b>" +
-        (filtered ? "Clear the search to see the whole bank." : "Documents appear here the moment the agent or the harness writes one.") + "</div>";
+      : '<div class="mem-empty"><b>' + (filtered ? "No document in db." + esc(b) + (S.run && !S.q ? " belongs to this run." : " matches.") : "db." + esc(b) + " is empty.") + "</b>" +
+        (S.run && !S.q ? "Memory is per game. ALL RUNS shows the documents of every run." : filtered ? "Clear the search to see the whole bank." : "Documents appear here the moment the agent or the harness writes one.") + "</div>";
   }
   function renderAll(docs) {
     S.cards.forEach(function (c) { clearTimeout(c.timer); });
@@ -298,7 +303,7 @@
 
   /* ---------- loading ---------- */
   function loadBanks() {
-    return api("/api/memory/banks").then(function (banks) {
+    return api("/api/memory/banks" + (S.run ? "?run_id=" + encodeURIComponent(S.run) : "")).then(function (banks) {
       S.banks = banks;
       paintTiles();
       paintHead();
@@ -414,8 +419,9 @@
         box.appendChild(t);
       }
       t.classList.toggle("mem-on", b.name === S.bank);
-      var n = t.querySelector(".mem-count");
-      if (n.textContent !== String(b.count)) n.textContent = b.count;
+      var n = t.querySelector(".mem-count"), shown = S.run && b.run_count != null ? b.run_count : b.count;  // a run filter: that run's documents
+      if (n.textContent !== String(shown)) n.textContent = shown;
+      t.title = S.run && b.run_count != null ? b.run_count + " of run " + S.run + ", " + b.count + " in all runs" : "";
       var at = S.lastAt[b.name] || b.updated_at, last = t.querySelector(".mem-tlast");
       if (last.dataset.at !== String(at)) {
         last.dataset.at = String(at);
@@ -460,7 +466,9 @@
     S.el.seg.children[1].classList.toggle("mem-on", S.allVersions);
     S.el.rawAll.classList.toggle("mem-on", S.rawAll);
     S.el.runf.hidden = !S.run;
-    S.el.runf.firstElementChild.textContent = "run " + S.run;
+    S.el.runf.firstElementChild.textContent = "ONLY RUN " + S.run;
+    S.el.runf.title = "Memory is per game: only the documents of run " + S.run + " are listed. ALL RUNS lifts the filter.";
+    S.el.sub.lastElementChild.hidden = !!S.run;  // the filter chip takes the room of the bank's description
     S.el.tiles.querySelectorAll(".mem-tile").forEach(function (t) { t.classList.toggle("mem-on", t.dataset.bank === S.bank); });
   }
   function tick() {
@@ -490,7 +498,7 @@
     S.loaded = false;
     if (!S.root) return;
     paintHead();
-    if (S.active) loadList(true);
+    if (S.active) { loadBanks(); loadList(true); }  // the tiles count the filtered run's documents
   }
   function setActive(on) {
     on = !!on;
@@ -506,7 +514,7 @@
       '<div class="mem-feed"><h3>CHANGE STREAM</h3><div class="mem-feedlist"></div></div></aside>' +
       '<section class="mem-main"><div class="mem-status"></div><div class="mem-head"><span class="mem-title"></span>' +
       '<span class="mem-sub"></span><span class="mem-grow"></span><span class="mem-runf" hidden><span></span>' +
-      '<button type="button" class="mem-runx" title="show every run">\u00d7</button></span>' +
+      '<button type="button" class="mem-runx" title="lift the filter: show the documents of every run">ALL RUNS</button></span>' +
       '<input class="mem-search" type="search" spellcheck="false" autocomplete="off" aria-label="Search this memory bank">' +
       '<span class="mem-seg" hidden><button type="button" class="mem-btn" data-all="0">LATEST PER RUN</button>' +
       '<button type="button" class="mem-btn" data-all="1">ALL VERSIONS</button></span>' +

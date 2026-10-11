@@ -1,9 +1,9 @@
-"""Harness generations and lessons: the genome the evolution loop edits.
+"""Harness generations and lessons, one lineage per run.
 
-A generation is what the harness adds around a game: carried lessons, the
-addendum rendered from them and launch knobs. `tools` is reserved and always
-empty: every game starts from a fresh workspace and no scripts are carried.
-Documents follow docs/SCHEMA.md.
+A run is one game. It starts at generation k=0 with no lessons; each time a
+level is cleared the level evolver (levels.py) stores generation k+1 for that
+run. Nothing here is shared between runs: a lesson learned in one game is not
+supposed to transfer to another, only to the later levels of the same game.
 """
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import re
 from typing import Any
 
 from pymongo.database import Database
+from pymongo.errors import DuplicateKeyError
 
 from mongoarc import db as D
 
@@ -19,6 +20,12 @@ DEFAULT_KNOBS: dict[str, Any] = {"budget_multiple": 5.0, "max_nudges": 2, "coach
 # Allowed range per knob; anything a distiller proposes is clamped to it.
 KNOB_RANGE = {"budget_multiple": (2.0, 8.0), "max_nudges": (0, 6), "coach_stuck_factor": (1.5, 6.0)}
 LESSON_KINDS = ("mechanic_prior", "strategy", "pitfall", "tooling")
+MAX_ACTIVE = 10        # active lessons per run
+LESSON_CHARS = 500
+
+# The lessons section of the workspace CLAUDE.md sits between these two lines, so it can be replaced in place.
+START_MARK = "<!-- mongoarc:lessons:start -->"
+END_MARK = "<!-- mongoarc:lessons:end -->"
 
 NETWORK_NOTE = (
     "### Environment note (hackathon)\n\n"
@@ -29,54 +36,35 @@ NETWORK_NOTE = (
 # What the agent is told about its memory. CCARC's doctrine knows nothing of `memory.py` or `scripts/`,
 # so this section of the workspace CLAUDE.md is the only place the agent can learn of them.
 MEMORY_NOTE = (
-    "### Long-term memory\n\n"
-    "This game starts with an empty `notes/` and `scripts/`. What earlier games learned is in a memory you "
-    "reach by search:\n\n"
-    "- **Before your first action**, run `python3 memory.py recall <words>` with words for what you see in "
-    "the first frame and the actions on offer (object colours, shapes, \"click\", \"key\", \"wall\", ...). "
-    "Search again whenever something new appears or something you expected did not happen. A search costs "
-    "no game actions. It returns lessons distilled across earlier games plus the notes and verified rules "
-    "their solvers left. All of it describes OTHER games: check it against what you see and what your first "
-    "moves do before relying on it.\n"
-    "- **Each time you clear a level**, write what you verified to `notes/mechanics.md` (create it, then keep "
-    "it up to date). Prose saved under `notes/` is stored in this memory as you write it and becomes "
-    "searchable in later games, so write it for the solver of a different game: what each kind of object "
-    "looked like and did, what each action did, what was fatal, what had to happen in which order. Leave out "
-    "this game's layout and coordinates.\n"
-    "- Code goes in `scripts/`. It is not stored; name the script in the note that explains it.\n\n"
+    "### Memory for this game\n\n"
+    "This game starts with an empty memory. It holds only what THIS game's earlier levels produced: the notes "
+    "you wrote, the rules you committed at each level gate, and the lessons the harness distilled from them "
+    "each time you cleared a level. Nothing in it comes from another game.\n\n"
+    "- **At the start of every level, before your first action on it**, run "
+    "`python3 memory.py recall <words for what you see>` (object colours, shapes, \"key\", \"wall\", the "
+    "actions on offer, ...). A search costs no game actions. Later levels reuse what the earlier ones taught "
+    "with a new layout, so what comes back is the cheapest way to avoid paying for the same discovery twice.\n"
+    "- **Each time you clear a level**, write what you verified to `notes/mechanics.md` and keep it up to date; "
+    "prose under `notes/` is stored as you write it. Say what each object looks like and does, what each "
+    "action does, what is fatal, and what has to happen in which order.\n"
+    "- Code goes in `scripts/` and is not stored; name the script in the note that explains it.\n\n"
     "`memory.py` talks to a service the harness runs on this machine.\n")
 
-# Same shape CCARC refuses in solver-facing text: 4 chars, letter first, a digit inside.
-_ID_SHAPE = re.compile(r"(?<![\w-])(?=[a-z][a-z0-9]{3}(?!\w))(?=[a-z0-9]*\d)[a-z][a-z0-9]{3}")
-_ID_ALLOWED = {"utf8", "int8", "sha1", "md5s"}
-# A cell, a named axis with a value, or two bare numbers side by side ("12, 3", "12 3", "12/3").
-_COORD = re.compile(r"[(\[]\s*-?\d+\s*,\s*-?\d+\s*[)\]]"
-                    r"|\b(?:x|y|row|col|column)\s*(?:=|==|:)?\s*\d+\b"
-                    r"|\b\d+\s*[,/]\s*\d+\b|\b\d+\s+\d+\b", re.I)
+# A cell, or two bare numbers side by side: one level's layout, which the next level will not share.
+_COORD = re.compile(r"[(\[]\s*-?\d+\s*,\s*-?\d+\s*[)\]]|\b(?:x|y|row|col|column)\s*(?:=|==)\s*\d+\b", re.I)
 
 
-def clean_lesson(text: str, game_id: str = "") -> str | None:
-    """The lesson with whitespace normalised, or None if it is not game-independent.
+def clean_lesson(text: Any) -> str | None:
+    """The lesson with whitespace normalised, or None if it is empty or pins a level's coordinates.
 
-    A lesson that names a game or gives coordinates is rejected, never
-    rewritten: with the cell blanked out it would still describe one level's
-    layout, and relabelling a mechanic hides where it came from.
+    A lesson is about one game and should be concrete about it (objects,
+    colours, what each action does). Only a hard-coded cell is refused: layouts
+    change between levels, so a coordinate is wrong on the next one.
     """
-    text = " ".join(str(text or "").split())
-    if not text:
+    text = " ".join(str(text or "").split()) if isinstance(text, str) else ""
+    if not text or _COORD.search(text):
         return None
-    low = text.lower()
-    # The id itself, its short form, and any long part of it (real ids end in a hex suffix).
-    parts = {p for p in game_id.lower().split("-")[1:] if len(p) >= 6}
-    short = game_id.split("-")[0].lower() if game_id else ""
-    if game_id and (game_id.lower() in low or any(p in low for p in parts)
-                    or (short and re.search(rf"(?<![a-z0-9]){re.escape(short)}", low))):
-        return None
-    if any(m.group(0) not in _ID_ALLOWED for m in _ID_SHAPE.finditer(low)):
-        return None
-    if _COORD.search(text):
-        return None
-    return text[:400]
+    return text[:LESSON_CHARS]
 
 
 def norm(text: str) -> str:
@@ -102,79 +90,120 @@ def launch_settings(knobs: dict | None) -> dict[str, Any]:
 
 
 def render_addendum(gen: dict, lessons: list[dict], memory: bool = True) -> str:
-    """The markdown appended to the workspace CLAUDE.md for this generation.
+    """The section appended to the workspace CLAUDE.md, between START_MARK and END_MARK.
 
-    `memory=False` leaves out the memory section, for a launch that could not
-    give the agent `memory.py`.
+    `memory=False` leaves out the memory section, for a launch that gives the
+    agent no `memory.py`.
     """
-    n = gen["_id"]
-    out = ["", "---", "", f"## Carried lessons (harness generation {n})", ""]
+    k = int(gen.get("k") or 0)
     live = [l for l in lessons if l.get("status", "active") == "active"]
+    out = ["", "---", "", START_MARK]
+    if live or memory:                            # a control run is promised no lessons: it gets none
+        out += [f"## Lessons from the levels you have cleared (harness generation {k})", ""]
     if live:
-        out += ["These come from earlier games played under this harness, not from the game you are "
-                "playing now. Each one is a prior, not a fact. Check it against the first frame and against "
-                "what your first few moves do; do not spend actions only to test a lesson. Say in "
-                "`gate.acknowledge(...)` which ones held.", ""]
+        out += ["The harness distilled these from what you recorded on the levels of THIS game you have already "
+                "cleared (your rule book, your notes, and what each level cost). They are about this game: use "
+                "them on the level in front of you. The layout changes from level to level, so re-read the "
+                "frame before reusing a route.", ""]
         for i, l in enumerate(live, 1):
-            s = l.get("stats") or {}
-            seen = f", carried into {s['injected']} earlier run(s)" if s.get("injected") else ""
-            out.append(f"{i}. **{l.get('kind', 'strategy')}** ({l['_id']}{seen}): {l['text']}")
-    else:
-        out.append("No lessons are carried yet: no earlier game has produced one. "
-                   "Lessons listed here in later generations come from earlier games and are priors to test, not facts.")
-    out += [""] + ([MEMORY_NOTE] if memory else []) + [NETWORK_NOTE]
+            out.append(f"{i}. **{l.get('kind', 'strategy')}** ({l['_id']}, after level {l.get('level')}): "
+                       f"{l['text']}")
+    elif memory:
+        out.append("No lessons yet: this game has just started. Lessons will appear here as levels are cleared, "
+                   "and they will be about this game only.")
+    out += [""] + ([MEMORY_NOTE] if memory else []) + [NETWORK_NOTE, END_MARK, ""]
     return "\n".join(out)
 
 
-def _gen0() -> dict:
-    g = {"_id": 0, "parent": None, "created_at": D.now(), "created_from_run": None, "status": "active",
-         "lessons": [], "knobs": dict(DEFAULT_KNOBS), "tools": [],
-         "diff": {"added_lessons": [], "retired_lessons": [], "revised_lessons": [], "knob_changes": {},
-                  "added_tools": []},
-         "rationale": "The empty harness: no lessons, default knobs.",
+def replace_section(doc: str, addendum: str) -> str:
+    """`doc` with its marked lessons section replaced by the one in `addendum`; nothing else changes.
+
+    With no markers in `doc`, the addendum is appended.
+    """
+    a, b = doc.find(START_MARK), doc.find(END_MARK)
+    x, y = addendum.find(START_MARK), addendum.find(END_MARK)
+    if x < 0 or y < x:
+        raise ValueError("the addendum has no marked lessons section")
+    if a < 0 or b < a:
+        return doc.rstrip("\n") + "\n" + addendum
+    return doc[:a] + addendum[x:y] + doc[b:]
+
+
+def section_of(doc: str) -> str | None:
+    """The marked lessons section of a document, markers included; None if it has none."""
+    a, b = doc.find(START_MARK), doc.find(END_MARK)
+    return doc[a:b + len(END_MARK)] if 0 <= a < b else None
+
+
+def next_gen_id(db: Database) -> int:
+    last = db[D.GENERATIONS].find_one({"_id": {"$type": "number"}}, sort=[("_id", -1)], projection={"_id": 1})
+    return int(last["_id"]) + 1 if last else 0
+
+
+def gen0(run_id: str, game_id: str, memory: bool = True) -> dict:
+    """Generation k=0 of a run, not yet stored (and without an `_id`)."""
+    g = {"run_id": run_id, "game_id": game_id, "k": 0, "level": None, "parent": None, "status": "active",
+         "created_at": D.now(), "lessons": [], "knobs": dict(DEFAULT_KNOBS),
+         "diff": {"added_lessons": [], "retired_lessons": [], "revised_lessons": [], "knob_changes": {}},
+         "rationale": "The game starts with an empty memory: no lessons, default knobs.",
          "distiller": {"model": "none", "cost_usd": None, "kind": "heuristic"},
-         "fitness": {"runs": [], "mean_efficiency": None, "mean_completion": None}}
-    g["addendum"] = render_addendum(g, [])
+         "level_metrics": None, "played": None}
+    g["addendum"] = render_addendum(g, [], memory=memory)
     return g
 
 
-def ensure_gen0(db: Database) -> dict:
-    """Create generation 0 if the collection is empty; returns it."""
-    g = _gen0()
-    db[D.GENERATIONS].update_one({"_id": 0}, {"$setOnInsert": {k: v for k, v in g.items() if k != "_id"}},
-                                 upsert=True)
-    return db[D.GENERATIONS].find_one({"_id": 0})
+def insert_generation(db: Database, gen: dict, session=None) -> dict:
+    """Store a generation under the next free id (max(_id)+1), retrying if another launch took it."""
+    for _ in range(50):
+        gen["_id"] = next_gen_id(db)
+        try:
+            db[D.GENERATIONS].insert_one(gen, session=session)
+            return gen
+        except DuplicateKeyError:
+            if session is not None:              # inside a transaction: let the caller retry it whole
+                raise
+    raise RuntimeError("no free generation id")
 
 
-def active(db: Database) -> dict:
-    """The generation the next game is launched with."""
-    g = db[D.GENERATIONS].find_one({"status": "active"}, sort=[("_id", -1)])
-    return g or ensure_gen0(db)
-
-
-def get(db: Database, n: int) -> dict:
-    g = db[D.GENERATIONS].find_one({"_id": int(n)})
+def ensure_run_gen0(db: Database, run_id: str, game_id: str, memory: bool = True) -> dict:
+    """The run's generation 0, created if the run has no generation yet."""
+    g = db[D.GENERATIONS].find_one({"run_id": run_id, "k": 0})
     if g is None:
-        if int(n) == 0:
-            return ensure_gen0(db)
-        raise KeyError(f"no generation {n}")
+        g = insert_generation(db, gen0(run_id, game_id, memory))
     return g
 
 
-def lessons_of(db: Database, gen: dict) -> list[dict]:
-    """The generation's lesson documents, in carried order."""
-    by_id = {l["_id"]: l for l in db[D.LESSONS].find({"_id": {"$in": gen.get("lessons") or []}})}
-    return [by_id[i] for i in gen.get("lessons") or [] if i in by_id]
+def active(db: Database, run_id: str) -> dict | None:
+    """The run's active generation (the one its current level is played under), or None."""
+    return (db[D.GENERATIONS].find_one({"run_id": run_id, "status": "active"}, sort=[("k", -1)])
+            or db[D.GENERATIONS].find_one({"run_id": run_id}, sort=[("k", -1)]))
+
+
+def lineage(db: Database, run_id: str) -> list[dict]:
+    return list(db[D.GENERATIONS].find({"run_id": run_id}).sort("k", 1))
+
+
+def lessons_of(db: Database, gen: dict | None) -> list[dict]:
+    """The generation's lesson documents, in order."""
+    ids = (gen or {}).get("lessons") or []
+    by_id = {l["_id"]: l for l in db[D.LESSONS].find({"_id": {"$in": ids}})}
+    return [by_id[i] for i in ids if i in by_id]
+
+
+def active_lessons(db: Database, run_id: str) -> list[dict]:
+    """The run's lessons as they stand now (they change every time a level is cleared)."""
+    return [l for l in lessons_of(db, active(db, run_id)) if l.get("status") == "active"]
 
 
 def next_lesson_ids(db: Database, count: int) -> list[str]:
-    last = db[D.LESSONS].find_one({}, sort=[("_id", -1)], projection={"_id": 1})
+    last = db[D.LESSONS].find_one({"_id": {"$regex": r"^L\d+$"}}, sort=[("_id", -1)], projection={"_id": 1})
     start = int(last["_id"][1:]) + 1 if last else 1
     return [f"L{start + i:04d}" for i in range(count)]
 
 
-def new_lesson(lid: str, text: str, kind: str, tags: list[str], evidence: list[dict], gen: int) -> dict:
-    return {"_id": lid, "text": text, "kind": kind if kind in LESSON_KINDS else "strategy",
+def new_lesson(lid: str, run_id: str, game_id: str, level: int, text: str, kind: str | None, tags: list[str],
+               evidence: list[dict], gen: int | None) -> dict:
+    return {"_id": lid, "run_id": run_id, "game_id": game_id, "level": int(level), "text": text,
+            "kind": kind if kind in LESSON_KINDS else "strategy",
             "tags": [str(t)[:40] for t in (tags or [])][:6], "evidence": evidence, "created_gen": gen,
-            "created_at": D.now(), "status": "active", "retired_reason": None,
-            "stats": {"runs": [], "injected": 0, "efficiency_sum": 0.0, "wins": 0, "recalled": 0}}
+            "created_at": D.now(), "status": "active", "retired_reason": None, "stats": {"recalled": 0}}

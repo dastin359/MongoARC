@@ -37,7 +37,8 @@ const S = {
   actions: [], early: [], stats: [], statTail: null, statN: -1, statsOk: true, base: 0, loadedTo: -1, pos: -1,
   events: [], lastSeq: 0, feedStart: 0, feedEnd: 0, feedNone: true, feedPinned: true,
   rulebooks: [], rbKey: null, rbDirty: true, rbLoaded: false, evLoaded: false, liveInit: false, settled: false,
-  lessons: [], gens: [], evoSig: '', evoDirty: true, evoPending: false, sig: {},
+  lessons: [], gens: [], evoEvents: [], evoPartial: false, evoFor: null,  // the selected run's own generations, lessons, memory searches
+  evoSig: '', evoDirty: true, evoPending: false, evoAgain: false, evoKey: '', sig: {},
   epoch: 0,   // bumped when the run or mode changes; stale async work checks it
   play: 0,    // bumped on every seek; stale animation callbacks check it
   stepOnce: false, polling: false, pollN: 0,
@@ -225,6 +226,7 @@ async function selectRun(id, mode) {
     base: 0, loadedTo: -1, pos: -1, events: [], lastSeq: 0, feedStart: 0, feedEnd: 0, feedNone: true, feedPinned: true,
     rulebooks: [], rbKey: null, rbDirty: true, rbLoaded: false, evLoaded: false, settled: false, pollN: 0, sig: {} });
   if (mode) S.mode = mode;
+  if (S.evoFor !== id) { S.gens = []; S.lessons = []; S.evoEvents = []; S.evoPartial = false; S.evoFor = null; markEvolution(); }
   AC.reset();
   MB.at = 0;  // this run's notes on the next tick, not a second and a half later
   $('#feedIn').replaceChildren();
@@ -263,14 +265,18 @@ async function selectRun(id, mode) {
   ensureEvolution(r);
   await pollRun();
 }
-// A run launched under a generation or with lessons the page has not loaded yet: fetch them now, not on the next slow tick.
+// The run's generations as the page holds them are behind (another run was selected, or a level was just cleared and
+// runs.gen_k moved on): fetch them now, not on the next slow tick.
 function ensureEvolution(r) {
-  if (!r || !Number.isInteger(r.generation)) return;
-  const known = new Set(S.lessons.map((l) => l._id));
-  if (S.gens.some((g) => g._id === r.generation) && (r.lessons_used || []).every((id) => known.has(id))) return;
-  S.evoPending = true;
-  renderHarness();
-  refreshEvolution().catch(console.warn).finally(() => { S.evoPending = false; renderHarness(); });
+  if (!r) return;
+  const key = r._id + ':' + r.gen_k;  // asked once per run and generation; the slow tick covers everything else
+  if (S.evoKey === key && (S.evoFor === r._id || S.evoPending)) return;
+  if (S.evoPending) { S.evoAgain = true; return; }
+  S.evoKey = key; S.evoPending = true;
+  refreshEvolution().catch(console.warn).finally(() => {
+    S.evoPending = false;
+    if (S.evoAgain) { S.evoAgain = false; ensureEvolution(evoRun()); }
+  });
 }
 
 async function pollRun() {
@@ -283,6 +289,7 @@ async function pollRun() {
       const r = await api(`/api/runs/${enc(id)}`);
       if (ep !== S.epoch) return;
       S.run = r;
+      if (Number.isInteger(r.gen_k) && S.evoFor === id && !S.gens.some((g) => g.k === r.gen_k)) ensureEvolution(r);
     }
     let got = 0;
     // The feed and the rule book first: they are small, and must not wait behind megabytes of boards.
@@ -307,7 +314,7 @@ async function pollRun() {
       if (list.length < PAGE) break;
     }
     S.settled = got === 0 && runSettled();
-    renderHud(); renderHarness(); syncScrub(); syncFeed(); syncRulebook(); renderMode();
+    renderHud(); renderHarness(); syncScrub(); syncFeed(); syncRulebook(); renderMode(); markEvolution();
   } finally { S.polling = false; }
 }
 function afterActions() {
@@ -331,16 +338,32 @@ async function refreshRuns() {
   // A run still marked running that has not moved since a later run started (and ended) is a killed game, not a live one.
   const at = (v) => Date.parse(v) || 0;
   const dead = (r, i) => S.runs.slice(0, i).some((s) => s.status !== 'running' && at(r.updated_at) < at(s.started_at));
-  const running = S.runs.find((r, i) => r.status === 'running' && !dead(r, i));
+  // Of the games in flight, one with per-level memory comes before a control run: it is the one that evolves.
+  const alive = S.runs.filter((r, i) => r.status === 'running' && !dead(r, i));
+  const running = alive.find((r) => r.role !== 'control') || alive[0];
   const pick = running || S.runs[0];
   if (!S.runs.length && !S.runId) clearBoard('No runs yet. Launch a game and it will appear here.');
   if (S.follow && pick && (S.runId == null || (running && running._id !== S.runId && S.mode === 'live'))) {
     return selectRun(pick._id, S.mode === 'auto' ? 'live' : S.mode);
   }
 }
+// Generations and lessons belong to one run: nothing is read from, or shown for, any other game.
 async function refreshEvolution() {
-  const [gens, lessons] = await Promise.all([api('/api/generations'), api('/api/lessons')]);
-  S.gens = gens; S.lessons = lessons;
+  const rid = S.runId;
+  if (!rid) { S.gens = []; S.lessons = []; S.evoEvents = []; S.evoFor = null; return markEvolution(); }
+  // The memory searches are read for the evolution tab only (and once per run, so the tab opens with them).
+  const wantEv = S.tab === 'evolution' || S.evoFor !== rid;
+  const [gens, lessons, evs] = await Promise.all([api(`/api/generations?run_id=${enc(rid)}`), api(`/api/lessons?run_id=${enc(rid)}`),
+    wantEv ? api(`/api/runs/${enc(rid)}/events?kind=recall,harness&limit=2000`) : null]);
+  if (rid !== S.runId) return;
+  // Filtered here as well: a server from before the per-run design ignores run_id and kind and answers with everything.
+  S.gens = gens.filter((g) => g.run_id === rid).sort((a, b) => (a.k || 0) - (b.k || 0));
+  S.lessons = lessons.filter((l) => l.run_id === rid);
+  if (evs) {
+    S.evoEvents = evs.filter((e) => e.kind === 'recall' || e.kind === 'harness');
+    S.evoPartial = evs.length >= 2000 && S.evoEvents.length < evs.length;
+  }
+  S.evoFor = rid;
   markEvolution(); renderHarness();
 }
 let tickN = 0;
@@ -377,12 +400,15 @@ function hudView() {
 }
 function renderHud() {
   const r = S.run, v = hudView();
-  if (!once('hud', [S.runId, r && r.status, r && r.generation, S.pos, v.level, v.used, v.deaths, v.costs, v.N])) return;
+  if (!once('hud', [S.runId, r && r.status, r && r.gen_k, r && r.role, r && r.memory_tool, S.pos, v.level, v.used, v.deaths, v.costs, v.N])) return;
   $('#gameId').textContent = r ? r.game_id || S.runId : 'no run';
   $('#gameId').title = S.runId || '';
   const chip = $('#statusChip');
   chip.textContent = r ? r.status || '' : ''; chip.className = 'chip ' + ((r && r.status) || '');
-  $('#genChip').textContent = r && Number.isInteger(r.generation) ? 'GEN ' + r.generation : '';
+  // The run's CURRENT generation: it moves on each time a level is cleared.
+  $('#genChip').textContent = r && Number.isInteger(r.gen_k) ? 'GEN ' + r.gen_k : '';
+  $('#genChip').title = 'current harness generation of this run: one per cleared level';
+  $('#roleChip').textContent = isControl(r) ? 'CONTROL' : '';
   const la = $('#lastAct');
   la.replaceChildren();
   if (v.a) {
@@ -443,13 +469,13 @@ function renderMode() {
     : `run ${r.status}: final board shown. Switch to REPLAY to scrub.`;
 }
 function renderPicker() {
-  if (!once('picker', [S.runs.map((r) => [r._id, r.status]), S.runId, S.follow])) return;
+  if (!once('picker', [S.runs.map((r) => [r._id, r.status, r.gen_k, r.role]), S.runId, S.follow])) return;
   const sel = $('#runSel');
   sel.replaceChildren();
   const auto = el('option', null, S.runs.length ? `auto: ${S.follow && S.runId ? S.runId : 'newest running'}` : 'no runs yet');
   auto.value = ''; sel.append(auto);
   for (const r of S.runs) {
-    const o = el('option', null, `${r._id}  [${r.status || '?'}${Number.isInteger(r.generation) ? ', gen ' + r.generation : ''}]`);
+    const o = el('option', null, `${r._id}  [${r.status || '?'}${r.role === 'control' ? ', control' : Number.isInteger(r.gen_k) ? ', gen ' + r.gen_k : ''}]`);
     o.value = r._id; sel.append(o);
   }
   sel.value = S.follow ? '' : S.runId || '';
@@ -504,29 +530,33 @@ function lessonRow(id) {
 function renderHarness() {}  // the panel it filled was replaced by the memory panel below
 
 /* ---------- memory panel: the banks, live, and what this run has written ---------- */
-const MB = { banks: [], counts: {}, notes: [], at: 0, busy: false };
+const MB = { banks: [], counts: {}, notes: [], at: 0, busy: false, rid: null };
 async function pollMemory() {
   if (MB.busy || S.tab !== 'live' || Date.now() - MB.at < 1500) return;
   MB.busy = true; MB.at = Date.now();
   try {
     const rid = S.runId;
-    const banks = await api('/api/memory/banks');
+    const banks = await api('/api/memory/banks' + (rid ? `?run_id=${enc(rid)}` : ''));
+    // Memory is per game: the counts are this run's documents where the server reports them (run_count).
+    const own = !!rid && banks.every((bk) => Number.isInteger(bk.run_count)), cnt = (bk) => (own ? bk.run_count : bk.count);
     const notes = rid ? await api(`/api/memory/notes?run_id=${enc(rid)}&limit=20`) : [];
     if (rid !== S.runId) { MB.at = 0; return; }  // the run changed while this was in flight: ask again for the new one
+    if (MB.rid !== rid) { MB.rid = rid; MB.counts = {}; }
+    $('#memBanksInfo').textContent = own ? "this run's documents; click a bank to open them" : 'all runs; click a bank to open its documents';
     const box = $('#memBanks');
     if (!box.children.length || banks.length !== MB.banks.length) {
       box.replaceChildren(...banks.map((bk) => {
         const row = el('button', 'mb mb-' + bk.name);
-        row.append(el('b', null, String(bk.count)), el('span', null, { rulebooks: 'rule books', generations: 'harness gens' }[bk.name] || bk.name));
-        row.title = bk.description || '';
-        row.onclick = () => { setTab('memory'); if (window.MemoryTab) { MemoryTab.setRun(''); MemoryTab.open(bk.name); } };
+        row.append(el('b', null, String(cnt(bk))), el('span', null, { rulebooks: 'rule books', generations: 'harness gens' }[bk.name] || bk.name));
+        row.onclick = () => { setTab('memory'); if (window.MemoryTab) { MemoryTab.setRun(S.runId || ''); MemoryTab.open(bk.name); } };
         return row;
       }));
     }
     banks.forEach((bk, i) => {
       const row = box.children[i], n = row.firstChild;
-      if (MB.counts[bk.name] !== undefined && MB.counts[bk.name] !== bk.count) { row.classList.remove('pulse'); void row.offsetWidth; row.classList.add('pulse'); }
-      MB.counts[bk.name] = bk.count; n.textContent = String(bk.count);
+      if (MB.counts[bk.name] !== undefined && MB.counts[bk.name] !== cnt(bk)) { row.classList.remove('pulse'); void row.offsetWidth; row.classList.add('pulse'); }
+      MB.counts[bk.name] = cnt(bk); n.textContent = String(cnt(bk));
+      row.title = (bk.description || '') + (own ? `  ${bk.run_count} of this run, ${bk.count} in all runs.` : '');
     });
     MB.banks = banks;
     const sig = JSON.stringify(notes.map((x) => [x._id, x.version]));
@@ -588,12 +618,31 @@ function renderEvent(e) {
       if (!body.childElementCount) body.textContent = 'no new entries';
       break;
     }
-    case 'harness':
+    case 'harness': {
+      const gk = Number.isInteger(e.k) ? e.k : null, ids = e.lessons || [];
       label = 'HARNESS · ' + (e.what || 'event');
       body.textContent = e.text || '';
-      if ((e.lessons || []).length) body.append(el('div', 'ids', e.lessons.join('  ')));
+      if (e.what === 'memory_nudge') {  // the harness told the agent to search its memory before acting on a new level
+        d.classList.add('nudge');
+        label = 'HARNESS → AGENT · SEARCH YOUR MEMORY';
+        if (!e.text) body.textContent = 'Search your memory before the first action of this level.';
+      } else if (e.what === 'generation_created') {
+        label = 'HARNESS · NEW GENERATION' + (gk == null ? '' : ' · GEN ' + gk);
+        if (ids.length) body.append(el('div', 'ids', ids.map((x) => '+' + x).join('  ')));
+      } else if (e.what === 'lessons_injected') {
+        label = 'HARNESS · LESSONS INJECTED' + (gk == null ? '' : ' · GEN ' + gk);
+        const items = e.items || [];
+        if (items.length) {
+          const changed = e.changed || [];  // the event's text repeats the lessons; the list below is the readable form
+          body.textContent = changed.length ? `changed at this level: ${changed.join(', ')}` : '';
+          const list = el('div', 'inj');
+          for (const it of items) { const row = el('div'); row.append(el('span', 'id', it.id || ''), el('span', 'kind', it.kind || 'lesson'), it.text || ''); list.append(row); }
+          body.append(list);
+        } else if (ids.length) body.append(el('div', 'ids', ids.join('  ')));
+      } else if (ids.length) body.append(el('div', 'ids', ids.join('  ')));
       break;
-    case 'recall': {  // the agent searched the harness's long-term memory
+    }
+    case 'recall': {  // the agent searched this run's memory: its notes, its rule book, its level lessons
       d.classList.add('mem');
       label = 'MEMORY RECALL';
       if (e.query) body.append(el('div', 'q', e.query));
@@ -663,7 +712,7 @@ function onFeedScroll() {
   feedTop = top;
 }
 
-/* ---------- tab 2: evolution ---------- */
+/* ---------- tab 2: how the harness changed inside ONE game (the run in the RUN picker) ---------- */
 function runLink(id, text) {
   const a = el('a', 'run', text || id);
   a.title = 'Replay ' + id;
@@ -675,55 +724,85 @@ function openRun(id) {
   setTab('live');
   selectRun(id, 'replay').catch(console.warn);
 }
-function scoredRuns() {
-  return S.runs.filter((r) => r.metrics && typeof r.metrics.efficiency === 'number')
-    .sort((a, b) => String(a.started_at).localeCompare(String(b.started_at)) || String(a._id).localeCompare(String(b._id)));
-}
-const ROLE = { validation: 'held-out validation run', control: 'control run: no memory, no lessons', train: 'training run' };
-function genMeans(runs) {  // [{gen, mean, n}] in generation order
-  const m = new Map();
-  for (const r of runs) {
-    const k = Number.isInteger(r.generation) ? r.generation : null;
-    const s = m.get(k) || { gen: k, sum: 0, n: 0 };
-    s.sum += r.metrics.efficiency; s.n++; m.set(k, s);
+const ratioX = (v) => (typeof v === 'number' && isFinite(v) ? v.toFixed(2) + 'x' : '-');
+const isControl = (r) => !!r && (r.role === 'control' || r.memory_tool === false);
+function evoRun() { return S.run && S.run._id === S.runId ? S.run : S.runs.find((x) => x._id === S.runId) || null; }
+// One row per level of a run: what the harness recorded when the level was cleared (generations), else the
+// run's metrics, else the collector's live counters. ratio = actions spent / human baseline; lower is better.
+function levelRows(r, gens) {
+  if (!r) return [];
+  const base = r.baseline_actions || [], m = r.metrics || {}, ml = m.levels || [], costs = r.level_costs || [];
+  const rec = new Map();
+  for (const g of gens || []) for (const x of [g.level_metrics, g.played]) if (x && Number.isInteger(x.level)) rec.set(x.level, x);
+  const cur = Number.isInteger(r.level) ? r.level : m.levels_cleared || 0;
+  const N = Math.max(r.win_levels || 0, m.win_levels || 0, base.length, ml.length);
+  const rows = [];
+  for (let i = 0; i < N; i++) {
+    const x = ml.find((v) => v.level === i), g = rec.get(i);
+    const cleared = i < cur || !!(x && x.cleared);
+    const actions = cleared ? (g && g.actions) || (x && x.actions) || costs[i] || 0 : costs[i] || (x && x.actions) || 0;
+    const baseline = (g && g.baseline) || (x && x.baseline) || base[i] || null;
+    rows.push({ level: i, actions, baseline, cleared, playing: !cleared && i === cur && r.status === 'running',
+      ratio: actions && baseline ? actions / baseline : null });
   }
-  return [...m.values()].filter((s) => s.gen != null).sort((a, b) => a.gen - b.gen).map((s) => ({ ...s, mean: s.sum / s.n }));
+  return rows;
+}
+// The reference for a run with per-level memory: the most recent finished control run of the same game.
+function controlFor(r) {
+  if (!r || isControl(r)) return null;
+  return S.runs.find((x) => x._id !== r._id && x.role === 'control' && x.game_id === r.game_id && x.status !== 'running') || null;
+}
+// Did the agent ever retrieve from its memory, and when? Recall events are written by the memory gateway on
+// every search; memory_nudge events by the harness each time it tells the agent to search at a new level.
+function memoryUse() {
+  const by = new Map(), at = (lv) => { if (!by.has(lv)) by.set(lv, { searches: [], nudges: 0 }); return by.get(lv); };
+  let searches = 0, nudges = 0;
+  for (const e of S.evoEvents) {
+    const lv = Number.isInteger(e.level) ? e.level : 0;
+    if (e.kind === 'recall') { at(lv).searches.push(e); searches++; }
+    else if (e.kind === 'harness' && e.what === 'memory_nudge') { at(lv).nudges++; nudges++; }
+  }
+  return { by, searches, nudges, levels: [...by.values()].filter((v) => v.searches.length).length };
 }
 function markEvolution() {
-  const sig = JSON.stringify([S.gens, S.lessons, S.runs.map((r) => [r._id, r.generation, r.status, r.role, r.metrics && r.metrics.efficiency, r.metrics && r.metrics.completion])]);
+  const r = evoRun(), c = controlFor(r);
+  const live = (x) => x && [x._id, x.status, x.role, x.level, x.gen_k, x.level_costs, x.metrics && x.metrics.levels];
+  const sig = JSON.stringify([S.runId, S.evoFor, S.gens, S.lessons, S.evoEvents.map((e) => e.seq), S.evoPartial, live(r), live(c)]);
   if (sig === S.evoSig) return;
   S.evoSig = sig; S.evoDirty = true;
   if (S.tab === 'evolution') renderEvolution();
 }
 function renderEvolution() {
   S.evoDirty = false;
-  const runs = scoredRuns();
-  renderTiles(runs); renderGens(); renderChart(runs); renderLessons();
+  const r = evoRun(), rows = levelRows(r, S.gens), use = memoryUse();
+  const scope = $('#evoScope');
+  scope.replaceChildren();
+  if (r) {
+    scope.append(el('b', null, r.game_id || r._id), el('span', 'rid', r._id), el('span', 'chip ' + (r.status || ''), r.status || ''));
+    if (isControl(r)) scope.append(el('span', 'chip ctl', 'CONTROL'));
+  } else scope.append(el('span', 'rid', S.runs.length ? 'No run selected: pick one in the RUN picker.' : 'No runs yet.'));
+  renderTiles(r, rows, use); renderGens(r, rows); renderChart(r, rows, use); renderLessons(r);
 }
-function renderTiles(runs) {
-  const box = $('#tiles'), active = S.gens.find((g) => g.status === 'active'), means = genMeans(runs);
-  const tile = (num, lbl) => { const t = el('div', 'tile'), n = el('div', 'num'); n.append(...[].concat(num)); t.append(n, el('div', 'lbl', lbl)); return t; };
-  const live = S.lessons.filter((l) => l.status === 'active').length;
+function renderTiles(r, rows, use) {
+  const box = $('#tiles'), active = S.gens.find((g) => g.status === 'active') || S.gens[S.gens.length - 1];
+  const tile = (num, lbl, cls) => { const t = el('div', 'tile'), n = el('div', 'num' + (cls ? ' ' + cls : '')); n.append(...[].concat(num)); t.append(n, el('div', 'lbl', lbl)); return t; };
+  const live = S.lessons.filter((l) => l.status === 'active').length, ctl = isControl(r);
+  const done = rows.filter((x) => x.cleared), scored = done.filter((x) => x.ratio != null);
   box.replaceChildren(
-    tile(active ? 'G' + active._id : '-', 'ACTIVE GENERATION'),
+    tile(active && Number.isInteger(active.k) ? 'GEN ' + active.k : '-', ctl ? 'GENERATION: A CONTROL RUN STAYS ON 0' : 'ACTIVE GENERATION OF THIS RUN'),
     tile(String(live), `ACTIVE LESSONS, ${S.lessons.length - live} RETIRED`),
-    tile([String(runs.length), el('small', null, ` of ${S.runs.length} runs`)], 'RUNS SCORED'));
-  const held = genMeans(runs.filter((r) => r.role === 'validation'));
-  const reverted = S.gens.filter((g) => g.status === 'reverted').length;
-  if (held.length >= 2) {  // the same held-out games under every generation: the only like-for-like figure
-    // Against the active generation; when the active one is the baseline itself (the candidate lost on the
-    // held-out game and was reverted), against the newest generation that was validated, named as reverted.
-    const a = held[0], act = held.find((h) => active && h.gen === active._id);
-    const b = act && act !== a ? act : held[held.length - 1];
-    const bGen = S.gens.find((g) => g._id === b.gen);
-    const note = bGen && bGen.status === 'reverted' ? `, G${b.gen} REVERTED` : reverted ? `, ${reverted} GEN REVERTED` : '';
-    box.append(tile([el('small', null, fmt(a.mean) + ' → '), el('span', b.mean >= a.mean ? 'up' : 'down', fmt(b.mean))],
-      `HELD-OUT EFFICIENCY G${a.gen} → G${b.gen}` + note));
-  } else if (means.length >= 2) {
-    const a = means[0], b = means[means.length - 1];
-    box.append(tile([el('small', null, fmt(a.mean) + ' → '), el('span', b.mean >= a.mean ? 'up' : 'down', fmt(b.mean))],
-      `MEAN EFFICIENCY G${a.gen} → G${b.gen}`));
-  } else box.append(tile(means.length ? fmt(means[0].mean) : '-', 'MEAN EFFICIENCY'));
+    tile([String(done.length), el('small', null, rows.length ? ` of ${rows.length}` : '')], 'LEVELS CLEARED'));
+  if (scored.length >= 2) {  // like for like inside one game: the first cleared level against the most recent one
+    const a = scored[0], b = scored[scored.length - 1];
+    box.append(tile([el('small', null, `L${a.level} ${ratioX(a.ratio)} → `), el('span', b.ratio <= a.ratio ? 'up' : 'down', `L${b.level} ${ratioX(b.ratio)}`)],
+      'ACTIONS PER LEVEL, OF HUMAN BASELINE: FIRST → LATEST CLEARED', 's2'));
+  } else box.append(tile(scored.length ? `L${scored[0].level} ${ratioX(scored[0].ratio)}` : '-', 'ACTIONS PER LEVEL, OF HUMAN BASELINE', 's2'));
+  if (ctl) box.append(tile('none', 'MEMORY SEARCHES: NO MEMORY TOOL IN A CONTROL RUN', 's2'));
+  else {
+    const n = el('span', use.searches ? '' : 'down', String(use.searches));
+    box.append(tile([n, el('small', null, ` at ${use.levels} of ${rows.length || '?'} levels`)],
+      `MEMORY SEARCHES BY THE AGENT · ${use.nudges} HARNESS NUDGE${use.nudges === 1 ? '' : 'S'}` + (S.evoPartial ? ' · FIRST 2000 EVENTS ONLY' : '')));
+  }
 }
 function idSpans(ids, cls, sign) {
   return (ids || []).map((id) => {
@@ -732,40 +811,59 @@ function idSpans(ids, cls, sign) {
     return s;
   });
 }
-function renderGens() {
+function renderGens(r, rows) {
   const box = $('#genList');
   box.replaceChildren();
-  if (!S.gens.length) {
-    return void box.append(el('div', 'none', 'No generations yet. Generation 0, the bare harness, appears when the evolution loop starts; each finished game can produce the next one.'));
+  if (!r) return void box.append(el('div', 'none', 'No run selected.'));
+  if (S.evoFor !== S.runId) return void box.append(el('div', 'none', 'Loading the generations of this run.'));
+  if (isControl(r)) {
+    box.append(el('div', 'evonote ctl', 'Control run: launched with --no-memory. It has no memory tool, learns no level lessons and stays on generation 0, so nothing evolves here. It is the reference that runs with per-level memory are compared against.'));
   }
-  for (const g of [...S.gens].sort((a, b) => b._id - a._id)) {
-    const c = el('div', 'gcard ' + (g.status || '')), hd = el('div', 'hd'), fit = g.fitness || {}, diff = g.diff || {};
-    c.style.setProperty('--gc', genColor(g._id));
-    hd.append(el('span', 'g', 'GEN ' + g._id), el('span', 'chip ' + (g.status || ''), g.status || '?'));
-    const f = el('span', 'fit');
-    f.append(el('small', null, 'efficiency '), fmt(fit.mean_efficiency), el('small', null, '  completion '), fmt(fit.mean_completion));
-    hd.append(f);
-    const sub = el('div', 'sub');
-    sub.append(`parent ${g.parent == null ? 'none' : 'gen ' + g.parent} · ${(g.lessons || []).length} lessons · from run `,
-      g.created_from_run ? runLink(g.created_from_run) : 'none');
-    if (g.distiller && g.distiller.kind) sub.append(` · distilled by ${g.distiller.kind}${g.distiller.model && g.distiller.model !== 'none' ? ' (' + g.distiller.model + ')' : ''}`);
-    const d = el('div', 'diff');
-    const line = (k, nodes) => { if (nodes.length) { const r = el('div'), v = el('span', 'vals'); v.append(...nodes); r.append(el('span', 'k', k), v); d.append(r); } };
-    line('LESSONS', [...idSpans(diff.added_lessons, 'add', '+'), ...idSpans(diff.revised_lessons, 'rev', '~'), ...idSpans(diff.retired_lessons, 'del', '-')]);
-    line('KNOBS', Object.entries(diff.knob_changes || {}).map(([k, v]) => el('span', 'knob', `${k} ${Array.isArray(v) ? v[0] + ' → ' + v[1] : v}`)));
-    line('TOOLS', (diff.added_tools || []).map((t) => el('span', 'add', '+' + t)));
-    if (!d.childElementCount) line('DIFF', [el('span', null, 'no changes: the baseline harness')]);
-    c.append(hd, sub, d);
-    if (g.rationale) c.append(el('p', null, g.rationale));
-    if (g.addendum) {  // what this generation appends to the agent prompt
-      const det = el('details', 'add'), n = g.addendum.split('\n').length;
-      det.append(el('summary', null, `PROMPT ADDENDUM, ${n} LINE${n === 1 ? '' : 'S'}`), el('pre', null, g.addendum));
-      c.append(det);
+  if (!S.gens.length) {
+    const old = r.generation != null && !Number.isInteger(r.gen_k);
+    return void box.append(el('div', 'evonote', 'No per-level generations recorded for this run.'
+      + (old ? ' It was recorded under the earlier design, where a generation belonged to a whole game; that record is not drawn here.'
+        : isControl(r) ? '' : ' Generation 0 is written at launch, and a new generation each time a level is cleared.')));
+  }
+  for (const g of [...S.gens].sort((a, b) => (b.k || 0) - (a.k || 0))) {
+    const c = el('div', 'gcard ' + (g.status || '')), hd = el('div', 'hd'), diff = g.diff || {}, lm = g.level_metrics, pl = g.played;
+    c.style.setProperty('--gc', genColor(g.k));
+    hd.append(el('span', 'g', 'GEN ' + (Number.isInteger(g.k) ? g.k : '?')), el('span', 'chip ' + (g.status || ''), g.status || '?'),
+      el('span', 'when', Number.isInteger(g.level) ? 'after level ' + g.level : 'at launch'));
+    const from = el('div', 'played from');
+    if (lm) {  // the level whose clearing produced this generation
+      const x = lm.baseline ? lm.actions / lm.baseline : null;
+      from.append(el('span', 'k', 'DISTILLED FROM'), `level ${lm.level}: ${lm.actions} actions / baseline ${lm.baseline == null ? '?' : lm.baseline}`,
+        el('small', null, 'efficiency ' + fmt(lm.efficiency)), el('b', x == null ? '' : x <= 1 ? 'good' : x <= 2 ? 'over' : 'bad', x == null ? '' : ratioX(x)));
     }
-    if ((fit.runs || []).length) {
-      const rs = el('div', 'runs');
-      rs.append(...fit.runs.map((id) => runLink(id)));
-      c.append(rs);
+    const sub = el('div', 'sub'), ds = g.distiller || {};
+    sub.append(`${(g.lessons || []).length} lesson${(g.lessons || []).length === 1 ? '' : 's'} active`);
+    if (ds.kind && ds.kind !== 'none') sub.append(` · distilled by ${ds.kind}${ds.model && ds.model !== 'none' ? ' (' + ds.model + ')' : ''}${typeof ds.cost_usd === 'number' && ds.cost_usd ? ', $' + ds.cost_usd.toFixed(3) : ''}`);
+    const d = el('div', 'diff');
+    const line = (k, nodes) => { if (nodes.length) { const row = el('div'), v = el('span', 'vals'); v.append(...nodes); row.append(el('span', 'k', k), v); d.append(row); } };
+    line('ADDED', idSpans(diff.added_lessons, 'add', '+'));
+    line('REVISED', idSpans(diff.revised_lessons, 'rev', '~'));
+    line('RETIRED', idSpans(diff.retired_lessons, 'del', '-'));
+    line('KNOBS', Object.entries(diff.knob_changes || {}).map(([k, v]) => el('span', 'knob', `${k} ${Array.isArray(v) ? v[0] + ' → ' + v[1] : v}`)));
+    if (!d.childElementCount) line('DIFF', [el('span', null, g.k ? 'no change to lessons or knobs' : 'none: the harness as launched, with empty memory')]);
+    c.append(hd, sub);
+    if (lm) c.append(from);
+    c.append(d);
+    if (g.rationale) c.append(el('p', null, g.rationale));
+    // How the level played UNDER this generation went: level k.
+    const p = el('div', 'played'), row = rows[g.k];
+    if (pl) {
+      const x = pl.baseline ? pl.actions / pl.baseline : null;
+      p.append(el('span', 'k', 'PLAYED UNDER IT'), `level ${pl.level}: ${pl.actions} actions / baseline ${pl.baseline == null ? '?' : pl.baseline}`,
+        el('b', x == null ? '' : x <= 1 ? 'good' : x <= 2 ? 'over' : 'bad', x == null ? '' : ratioX(x)));
+    } else if (row && row.playing) p.append(el('span', 'k', 'PLAYED UNDER IT'), `level ${row.level}: in play, ${row.actions} actions so far` + (row.baseline ? ` / baseline ${row.baseline}` : ''));
+    else if (row && !row.cleared && r.status !== 'running') p.append(el('span', 'k', 'PLAYED UNDER IT'), `level ${row.level}: not cleared` + (row.actions ? ` after ${row.actions} actions` : ''));
+    else if (!row && Number.isInteger(g.k) && rows.length && g.k >= rows.length) p.append(el('span', 'k', 'PLAYED UNDER IT'), 'nothing: the game was over, no level is left');
+    if (p.childElementCount) c.append(p);
+    if (g.addendum) {  // the lessons section of the workspace CLAUDE.md under this generation
+      const det = el('details', 'add'), n = g.addendum.split('\n').length;
+      det.append(el('summary', null, `LESSONS SECTION OF CLAUDE.md, ${n} LINE${n === 1 ? '' : 'S'}`), el('pre', null, g.addendum));
+      c.append(det);
     }
     box.append(c);
   }
@@ -777,70 +875,84 @@ function svg(tag, attrs, text) {
   if (text != null) e.textContent = text;
   return e;
 }
-function renderChart(runs) {
+function renderChart(r, rows, use) {
   const box = $('#chart'), W = box.clientWidth, H = box.clientHeight, leg = $('#chartLegend');
   box.replaceChildren(); leg.replaceChildren();
-  if (!runs.length) {
-    return void box.append(el('div', 'none', S.runs.length ? 'No scored runs yet. The evolution loop writes metrics when a game ends.' : 'No runs yet.'));
-  }
+  if (!r) return void box.append(el('div', 'none', S.runs.length ? 'No run selected.' : 'No runs yet.'));
+  if (!rows.length) return void box.append(el('div', 'none', 'No level data recorded for this run yet.'));
   if (W < 50 || H < 50) { S.evoDirty = true; return; }
-  const gens = [...new Set(runs.map((r) => (Number.isInteger(r.generation) ? r.generation : null)))];
+  const ctl = controlFor(r), crow = ctl ? levelRows(ctl, []) : [], self = isControl(r);
+  const perLevel = !self && S.gens.length > 0;  // level i was played under generation i of this run
+  const tone = (i) => (perLevel ? genColor(i) : '#b3bdca');
   const item = (cls, style, text) => { const s = el('span'), i = el('i', cls); if (style) i.style.background = style; s.append(i, text); return s; };
-  leg.append(el('span', null, 'efficiency:'), ...gens.map((g) => item('dot', genColor(g), g == null ? 'no generation' : 'gen ' + g)),
-    item('bar', null, 'completion: levels cleared / total'), item('dash', null, 'generation mean'));
-  const roles = new Set(runs.map((r) => r.role));
-  if (roles.has('validation')) leg.append(item('dia', null, 'held-out validation run'));
-  if (roles.has('control')) leg.append(item('ring', null, 'control: no memory, no lessons'));
-  const L = 62, R = 14, T = 32, B = 62, pw = W - L - R, ph = H - T - B, slot = pw / runs.length;
-  const x = (i) => L + (i + 0.5) * slot, y = (v) => T + (1 - clamp(v, 0, 1)) * ph;
-  const s = svg('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Run efficiency and completion in launch order, grouped by harness generation' });
-  let start = 0;
-  for (let i = 1; i <= runs.length; i++) {  // one band per consecutive stretch of a generation
-    if (i < runs.length && runs[i].generation === runs[start].generation) continue;
-    const g = runs[start].generation, x0 = L + start * slot, w = (i - start) * slot, col = genColor(g);
-    const mean = runs.slice(start, i).reduce((a, r) => a + r.metrics.efficiency, 0) / (i - start);
-    const head = svg('text', { x: x0 + 20, y: T - 16 });
-    head.append(svg('tspan', { class: 't' }, Number.isInteger(g) ? 'GEN ' + g : 'NO GEN'));
-    if (w > 150) head.append(svg('tspan', { dx: 10 }, 'mean '), svg('tspan', { class: 'v' }, fmt(mean)));
-    s.append(svg('rect', { x: x0, y: T, width: w, height: ph, fill: col, opacity: 0.07 }),
-      svg('rect', { x: x0 + 6, y: T - 25, width: 9, height: 9, fill: col }), head);
-    if (start) s.append(svg('line', { x1: x0, x2: x0, y1: T - 27, y2: T + ph, stroke: '#3a4656', 'stroke-width': 1 }));
-    s.append(svg('line', { x1: x0 + 4, x2: x0 + w - 4, y1: y(mean), y2: y(mean), stroke: '#b3bdca', 'stroke-width': 1.5, 'stroke-dasharray': '5 4' }));
-    start = i;
+  leg.append(self ? item('ring', null, 'this run (control, no memory)') : item('dot', '#b3bdca', 'this run (per-level memory)'));
+  if (ctl) { const s = item('ring', null, 'control (no memory) '); s.append(runLink(ctl._id)); leg.append(s); }
+  else if (!self) leg.append(el('span', 'mute', 'no finished control run of this game in the database'));
+  if (perLevel) {
+    const ks = rows.filter((x) => x.cleared || x.playing).map((x) => x.level);
+    if (ks.length) { const s = el('span', 'gk'); s.append('played under', ...ks.map((k) => item('dot', genColor(k), 'GEN ' + k))); leg.append(s); }
   }
-  for (const v of [0, 0.25, 0.5, 0.75, 1]) {
+  // A level a finished run never cleared is an X at the top; a level a running game has not reached yet is left empty.
+  const failed = (v, run) => !v.cleared && !v.playing && run.status !== 'running';
+  if (rows.some((v) => failed(v, r))) leg.append(item('x' + (self ? ' c' : ''), null, self ? 'level not cleared' : 'this run: level not cleared'));
+  if (ctl && crow.slice(0, rows.length).some((v) => failed(v, ctl))) leg.append(item('x c', null, 'control: level not cleared'));
+  if (!self) leg.append(el('span', 'mute', 'RECALLS: memory searches the agent made on that level; nudged = the harness told it to search'));
+  const L = 78, R = 16, T = 16, B = 60, pw = W - L - R, ph = H - T - B, N = rows.length, slot = pw / N;
+  let top = 1.5;
+  for (const x of [...rows, ...crow]) if (x.ratio != null && (x.cleared || x.playing)) top = Math.max(top, x.ratio * 1.14);
+  top = Math.ceil(top * 2) / 2;
+  const step = top <= 2 ? 0.5 : top <= 5 ? 1 : Math.ceil(top / 5);
+  const x = (i) => L + (i + 0.5) * slot, y = (v) => T + (1 - clamp(v / top, 0, 1)) * ph;
+  const s = svg('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Actions spent on each level of this game as a multiple of the human baseline; lower is better' });
+  for (let v = 0; v <= top + 1e-9; v += step) {
     s.append(svg('line', { x1: L, x2: L + pw, y1: y(v), y2: y(v), stroke: v ? '#1b232e' : '#3a4656', 'stroke-width': 1 }),
-      svg('text', { x: L - 8, y: y(v) + 4, 'text-anchor': 'end' }, v.toFixed(2)));
+      svg('text', { x: L - 8, y: y(v) + 4, 'text-anchor': 'end' }, v.toFixed(v % 1 ? 1 : 0) + 'x'));
   }
-  runs.forEach((r, i) => {
-    const c = r.metrics.completion;
-    if (typeof c === 'number' && c > 0) s.append(svg('rect', { x: x(i) - 3, y: y(c), width: 6, height: y(0) - y(c), fill: '#2b3644', rx: 2 }));
-  });
-  s.append(svg('polyline', { points: runs.map((r, i) => `${x(i)},${y(r.metrics.efficiency)}`).join(' '), fill: 'none', stroke: '#8a94a3', 'stroke-width': 2, 'stroke-linejoin': 'round' }));
-  const every = Math.ceil(runs.length / Math.max(1, Math.floor(pw / 38)));
-  s.append(svg('text', { x: L - 8, y: T + ph + 21, 'text-anchor': 'end', class: 't' }, 'RUN'),
-    svg('text', { x: L - 8, y: T + ph + 37, 'text-anchor': 'end', class: 't' }, 'LEVELS'),
-    svg('text', { x: L - 8, y: T + ph + 53, 'text-anchor': 'end', class: 't' }, 'GAME'));
-  runs.forEach((r, i) => {
-    const m = r.metrics;
-    const cx = x(i), cy = y(m.efficiency), col = genColor(r.generation);
-    if (r.role === 'validation') s.append(svg('rect', { x: cx - 6.5, y: cy - 6.5, width: 13, height: 13, fill: col, stroke: '#fff', 'stroke-width': 2, transform: `rotate(45 ${cx} ${cy})` }));
-    else if (r.role === 'control') s.append(svg('circle', { cx, cy, r: 6, fill: '#0e1218', stroke: col, 'stroke-width': 3 }));
-    else s.append(svg('circle', { cx, cy, r: 6.5, fill: col, stroke: '#0e1218', 'stroke-width': 2 }));
-    if (i % every === 0) {
-      s.append(svg('text', { x: cx, y: T + ph + 53, 'text-anchor': 'middle', class: 'g' }, String(r.game_id || '').split('-')[0]));
-      s.append(svg('text', { x: x(i), y: T + ph + 21, 'text-anchor': 'middle' }, String(i + 1)));
-      if (m.win_levels) s.append(svg('text', { x: x(i), y: T + ph + 37, 'text-anchor': 'middle', class: m.levels_cleared < m.win_levels ? 'v' : '' }, `${m.levels_cleared}/${m.win_levels}`));
-    }
+  s.append(svg('line', { x1: L, x2: L + pw, y1: y(1), y2: y(1), stroke: '#f1f4f8', 'stroke-width': 1.5, opacity: 0.75 }),
+    svg('text', { x: L + pw - 4, y: y(1) - 6, 'text-anchor': 'end', class: 't' }, 'human baseline'));
+  const pts = (list) => list.filter((v) => v.cleared && v.ratio != null).map((v) => `${x(v.level)},${y(v.ratio)}`).join(' ');
+  if (crow.length) s.append(svg('polyline', { points: pts(crow.slice(0, N)), fill: 'none', stroke: '#8a94a3', 'stroke-width': 1.5, 'stroke-dasharray': '5 4' }));
+  s.append(svg('polyline', { points: pts(rows), fill: 'none', stroke: '#8a94a3', 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-dasharray': self ? '5 4' : 'none' }));
+  const cross = (cx, cy, col, w) => { for (const d of [1, -1]) s.append(svg('line', { x1: cx - 5, x2: cx + 5, y1: cy - 5 * d, y2: cy + 5 * d, stroke: col, 'stroke-width': w, 'stroke-linecap': 'round' })); };
+  for (const v of crow.slice(0, N)) {  // the control run, drawn first so this run's points sit on top
+    if (v.cleared && v.ratio != null) s.append(svg('circle', { cx: x(v.level), cy: y(v.ratio), r: 5.5, fill: '#0e1218', stroke: '#b3bdca', 'stroke-width': 2.5 }));
+    else if (failed(v, ctl)) cross(x(v.level) + (rows[v.level] && failed(rows[v.level], r) ? 13 : 0), T + 9, '#b3bdca', 2);
+  }
+  const rowY = [T + ph + 20, T + ph + 36, T + ph + 52];
+  s.append(svg('text', { x: L - 8, y: rowY[0], 'text-anchor': 'end', class: 't' }, 'LEVEL'),
+    svg('text', { x: L - 8, y: rowY[1], 'text-anchor': 'end', class: 't' }, 'ACTIONS'),
+    svg('text', { x: L - 8, y: rowY[2], 'text-anchor': 'end', class: 't' }, 'RECALLS'));
+  rows.forEach((v, i) => {
+    const cx = x(i), col = tone(v.level), u = use.by.get(i) || { searches: [], nudges: 0 }, c = crow[i];
+    if (v.cleared && v.ratio != null) {
+      const cy = y(v.ratio);
+      if (self) s.append(svg('circle', { cx, cy, r: 5.5, fill: '#0e1218', stroke: '#b3bdca', 'stroke-width': 2.5 }));
+      else s.append(svg('circle', { cx, cy, r: 6.5, fill: col, stroke: '#0e1218', 'stroke-width': 2 }));
+      // The figure goes on the side away from the control run's point, so the two do not sit on each other.
+      const below = (c && c.cleared && c.ratio != null && c.ratio >= v.ratio && cy + 22 < T + ph) || cy - 12 < T + 10;
+      s.append(svg('text', { x: cx, y: below ? cy + 20 : cy - 11, 'text-anchor': 'middle', class: 'v' }, ratioX(v.ratio)));
+    } else if (v.playing) {
+      const cy = v.ratio != null ? y(v.ratio) : y(0);
+      s.append(svg('circle', { cx, cy, r: 6.5, fill: 'none', stroke: col, 'stroke-width': 2.5, 'stroke-dasharray': '3 3' }),
+        svg('text', { x: cx, y: cy - 12, 'text-anchor': 'middle', class: 't' }, 'in play'));
+    } else if (failed(v, r)) cross(cx - (c && failed(c, ctl) ? 13 : 0), T + 9, self ? '#b3bdca' : '#F93C31', 2.5);
+    s.append(svg('text', { x: cx, y: rowY[0], 'text-anchor': 'middle', class: 't' }, 'L' + i),
+      svg('text', { x: cx, y: rowY[1], 'text-anchor': 'middle' }, v.actions || v.cleared ? `${v.actions} / ${v.baseline == null ? '?' : v.baseline}` : '-'));
+    const reached = v.cleared || v.playing || v.actions > 0;
+    const st = self ? 'no tool' : !reached ? '-' : String(u.searches.length) + (u.nudges ? ' (nudged)' : '');
+    s.append(svg('text', { x: cx, y: rowY[2], 'text-anchor': 'middle', class: self || !reached ? '' : u.searches.length ? 'ok' : 'z' }, st));
     const hit = svg('rect', { x: L + i * slot, y: T, width: slot, height: ph + B, class: 'hit' });
-    hit.addEventListener('mousemove', (e) => showTip(e, `${r._id}\n${r.game_id || ''} · ${Number.isInteger(r.generation) ? 'gen ' + r.generation : 'no generation'} · ${ROLE[r.role] || 'training run'} · ${r.status}\n`
-      + `efficiency  ${fmt(m.efficiency)}\ncompletion  ${fmt(m.completion)}  (${m.levels_cleared}/${m.win_levels} levels)\n`
-      + `actions     ${m.actions_total} against a baseline of ${m.baseline_total}\nclick to replay`));
+    hit.addEventListener('mousemove', (e) => showTip(e, `level ${i}` + (self ? ' · control run, generation 0' : perLevel ? ` · played under GEN ${i}` : '') + '\n'
+      + (v.cleared ? `${v.actions} actions / human baseline ${v.baseline == null ? '?' : v.baseline} = ${ratioX(v.ratio)}`
+        : v.playing ? `in play: ${v.actions} actions so far` + (v.baseline ? ` / human baseline ${v.baseline}` : '')
+        : v.actions ? `not cleared after ${v.actions} actions` : r.status === 'running' ? 'not reached yet' : 'not reached')
+      + (self ? '' : `\nmemory searches by the agent on this level: ${u.searches.length}` + (u.nudges ? `, after ${u.nudges} harness nudge${u.nudges === 1 ? '' : 's'}` : ', no harness nudge recorded')
+        + u.searches.map((q) => `\n  "${String(q.query || '').slice(0, 44)}"`).join(''))
+      + (c ? `\ncontrol (no memory): ` + (c.cleared ? `${c.actions} actions = ${ratioX(c.ratio)}` : c.actions ? `not cleared after ${c.actions} actions` : 'not reached') : '')));
     hit.addEventListener('mouseleave', hideTip);
-    hit.addEventListener('click', () => { hideTip(); openRun(r._id); });
     s.append(hit);
   });
-  s.append(svg('text', { x: 12, y: T + ph / 2, 'text-anchor': 'middle', class: 't', transform: `rotate(-90 12 ${T + ph / 2})` }, 'EFFICIENCY'));
+  s.append(svg('text', { x: 12, y: T + ph / 2, 'text-anchor': 'middle', class: 't', transform: `rotate(-90 12 ${T + ph / 2})` }, 'ACTIONS / BASELINE'));
   box.append(s);
 }
 function showTip(e, text) {
@@ -850,32 +962,32 @@ function showTip(e, text) {
   t.style.top = Math.max(8, e.clientY - t.offsetHeight - 10) + 'px';
 }
 function hideTip() { $('#tip').hidden = true; }
-function renderLessons() {
+function renderLessons(r) {
   const box = $('#lessons');
   box.replaceChildren();
-  $('#lessonInfo').textContent = S.lessons.length ? 'game-independent statements the harness carries between games' : '';
-  if (!S.lessons.length) return void box.append(el('div', 'none', 'No lessons yet. The distiller writes them from rule books and outcomes after a game ends.'));
+  $('#lessonInfo').textContent = S.lessons.length ? 'what each cleared level taught, used on the later levels of this game only' : '';
+  if (!S.lessons.length) {
+    return void box.append(el('div', 'none', !r ? 'No run selected.'
+      : isControl(r) ? 'None: a control run has no memory and learns no level lessons.'
+      : 'No lessons recorded for this run. The harness distils them each time a level is cleared, for the later levels of the same game.'));
+  }
+  const revised = new Map();
+  for (const g of S.gens) for (const id of (g.diff || {}).revised_lessons || []) revised.set(id, g.k);
   const t = el('table', 'lt'), hr = el('tr');
-  for (const [h, c] of [['ID'], ['LESSON'], ['STATUS'], ['GEN'], ['EVIDENCE'], ['INJECTED', 'n'], ['MEAN EFF.', 'n']]) hr.append(el('th', c, h));
+  for (const [h, c] of [['ID'], ['LEARNED'], ['LESSON'], ['STATUS'], ['EVIDENCE  level / rule'], ['RECALLED', 'n']]) hr.append(el('th', c, h));
   t.append(hr);
   for (const l of S.lessons) {
-    const tr = el('tr', l.status === 'retired' ? 'retired' : ''), st = l.stats || {}, runs = st.runs || [];
+    const tr = el('tr', l.status === 'retired' ? 'retired' : ''), st = l.stats || {};
     const txt = el('td', 'txt');
     if (l.kind) txt.append(el('span', 'kind', l.kind));
     txt.append(el('span', 'body', l.text || ''));
+    if (revised.has(l._id)) txt.append(el('span', 'why rev', 'revised in GEN ' + revised.get(l._id)));
     if (l.retired_reason) txt.append(el('span', 'why', 'retired: ' + l.retired_reason));
     const status = el('td'); status.append(el('span', 'chip ' + (l.status || ''), l.status || ''));
     const evd = el('td', 'evd');
-    for (const e of l.evidence || []) {
-      const d = el('div');
-      d.append(el('span', 'what', `${e.game_id || ''}${Number.isInteger(e.level) ? ' L' + e.level : ''}${e.rule ? ': ' + e.rule : ''}`));
-      if (e.run_id) d.append(runLink(e.run_id));
-      evd.append(d);
-    }
-    const denom = runs.length || st.injected || 0;
-    tr.append(el('td', 'id', l._id), txt, status, el('td', 'm', l.created_gen == null ? '-' : String(l.created_gen)), evd,
-      el('td', 'm n', String(st.injected == null ? runs.length : st.injected)),
-      el('td', 'm n', denom && typeof st.efficiency_sum === 'number' ? fmt(st.efficiency_sum / denom) : '-'));
+    for (const e of l.evidence || []) evd.append(el('div', 'what', `${Number.isInteger(e.level) ? 'L' + e.level : ''}${e.rule ? ' / ' + e.rule : ''}`));
+    tr.append(el('td', 'id', l._id), el('td', 'm', Number.isInteger(l.level) ? 'after L' + l.level : '-'), txt, status, evd,
+      el('td', 'm n', st.recalled == null ? '-' : String(st.recalled)));
     t.append(tr);
   }
   box.append(t);
@@ -888,7 +1000,9 @@ function setTab(tab) {
   $('#tab-evolution').hidden = tab !== 'evolution';
   $('#tab-memory').hidden = tab !== 'memory';
   if (window.MemoryTab) MemoryTab.setActive(tab === 'memory');
-  $('#pickerWrap').hidden = $('#modeSeg').hidden = tab !== 'live';
+  $('#pickerWrap').hidden = tab === 'memory';  // the evolution tab is about the run in the picker
+  $('#modeSeg').hidden = tab !== 'live';
+  if (tab === 'evolution' && S.runId && S.evoFor !== S.runId) ensureEvolution(evoRun());
   for (const b of $('#tabs').children) b.classList.toggle('on', b.dataset.tab === tab);
   if (tab === 'evolution') renderEvolution();
   syncUrl();
@@ -915,7 +1029,11 @@ function step(dir) {
   S.stepOnce = true; kick();
 }
 function bind() {
-  for (const b of $('#tabs').children) b.onclick = () => setTab(b.dataset.tab);
+  for (const b of $('#tabs').children) b.onclick = () => {
+    // Memory is per game: the tab opens on the selected run's documents (its own "all runs" button lifts the filter).
+    if (b.dataset.tab === 'memory' && window.MemoryTab && S.runId) MemoryTab.setRun(S.runId);
+    setTab(b.dataset.tab);
+  };
   for (const b of $('#modeSeg').children) b.onclick = () => setMode(b.dataset.mode);
   for (const b of $('#speedSeg').children) b.onclick = () => {
     // A narrow transport (720p) shows only the current speed: that one button steps to the next speed.
@@ -947,7 +1065,10 @@ function bind() {
 }
 async function boot() {
   AC.mountOverlay($('#boardWrap')); AC.mountPad($('#ctlPad'), { layout: 'row' }); AC.mountTape($('#ctlTape'), { max: 12 });
-  if (window.MemoryTab) MemoryTab.mount($('#tab-memory'));
+  if (window.MemoryTab) {
+    MemoryTab.mount($('#tab-memory'));
+    if (S.tab === 'memory' && q.get('run') && !q.get('run_id')) MemoryTab.setRun(q.get('run'));
+  }
   addEventListener('mongoarc:open-run', (e) => { if (e.detail && e.detail.run_id) openRun(e.detail.run_id); });
   bind(); setTab(S.tab); renderMode(); renderHud(); renderHarness(); syncFeed(); syncRulebook();
   for (;;) {  // the palette comes from db.PALETTE; nothing is drawn without it

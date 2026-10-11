@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Long-term memory shared across games (read side).
+"""Memory for THIS game (read side).
 
-  python3 memory.py recall <words ...>     search what earlier games left behind
+  python3 memory.py recall <words ...>     search what this game's earlier levels left behind
 
-Returns lessons distilled across games, plus matching notes and verified rules
-from earlier games. All of it describes OTHER games: treat it as priors to test
-early, never as facts about this one.
+Returns the lessons the harness distilled each time you cleared a level, the
+rules you committed at the level gates, and your own notes. Everything in it
+comes from this game and nothing from any other. Run it at the start of every
+level, before your first action on it: the mechanics carry over, the layout
+does not.
 
 Writing: anything you save as prose under notes/ (markdown or plain text) is
-stored in this memory automatically and becomes searchable in later games.
-Code belongs in scripts/ and is not stored; mention a script's filename in the
-note that explains it.
+stored in this memory as you write it. Code belongs in scripts/ and is not
+stored; mention a script's filename in the note that explains it.
 """
 import json
 import os
@@ -37,18 +38,24 @@ def main(argv):
         print("memory unavailable:", out["error"])
         return 1
     if not (out["lessons"] or out["notes"] or out["rules"]):
-        print("nothing recorded yet")
+        print("nothing recorded yet for this game: memory fills as you clear levels and write notes/")
         return 0
     if out["lessons"]:
-        print("LESSONS (distilled across earlier games):")
+        print("LESSONS from the levels you cleared:")
         for l in out["lessons"]:
-            print(f"- [{l['id']} {l.get('kind') or ''}] {l['text']}")
-    if out["rules"]:
-        print("\nRULES verified in earlier games:")
-        for r in out["rules"]:
-            print(f"- ({r['game']}) {r['rule']}")
+            after = "" if l.get("level") is None else f", after level {l['level']}"
+            print(f"- [{l['id']} {l.get('kind') or ''}{after}] {l['text']}")
+    shown = False
+    for status, head in (("verified", "RULES you verified:"), ("refuted", "RULES you found false:")):
+        rules = [r for r in out["rules"] if r.get("status", "verified") == status]
+        if rules:
+            print(("\n" if out["lessons"] or shown else "") + head)
+            shown = True
+            for r in rules:
+                at = "" if r.get("level") is None else f"(level {r['level']}) "
+                print(f"- {at}{r['rule']}")
     for n in out["notes"]:
-        print(f"\nNOTE from {n['game']} ({n['path']}):")
+        print(f"\nYOUR NOTES ({n['path']}):")
         print(n["text"])
     return 0
 

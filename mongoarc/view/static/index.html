@@ -12,6 +12,7 @@
 <link rel="stylesheet" href="/static/style.css">
 <link rel="stylesheet" href="/static/controller.css">
 <link rel="stylesheet" href="/static/memory.css">
+<link rel="stylesheet" href="/static/resize.css">
 </head>
 <body>
 <header class="top">
@@ -36,6 +37,7 @@
       <span class="game" id="gameId">no run</span>
       <span class="chip" id="statusChip"></span>
       <span class="chip gen" id="genChip"></span>
+      <span class="chip ctl" id="roleChip" title="Control run: launched with --no-memory. No memory tool, no level lessons, generation 0 throughout."></span>
       <span class="grow"></span>
       <div class="tapeslot" id="ctlTape" title="The agent's most recent actions, newest on the right"></div>
       <span class="lastact" id="lastAct" hidden></span>
@@ -81,7 +83,7 @@
       <div class="scroll" id="rulebook"></div>
     </div>
     <div class="panel membanks">
-      <h2>MEMORY IN MONGODB <em>click a bank to open its documents</em></h2>
+      <h2>MEMORY IN MONGODB <em id="memBanksInfo">click a bank to open its documents</em></h2>
       <div class="mbgrid" id="memBanks"></div>
       <h2 class="sub">THIS RUN'S NOTES <em id="memNotesInfo"></em></h2>
       <div class="scroll" id="memNotes"></div>
@@ -96,18 +98,19 @@
 
 <main id="tab-evolution" class="evo" hidden>
   <section class="panel gens">
-    <h2>HARNESS GENERATIONS <em>newest first</em></h2>
+    <h2>HOW THE HARNESS CHANGED DURING THIS GAME <em>one generation per cleared level, newest first</em></h2>
+    <div class="evoscope" id="evoScope"></div>
     <div class="scroll" id="genList"></div>
   </section>
   <section class="evoright">
     <div class="tiles" id="tiles"></div>
     <div class="panel chartp">
-      <h2>RUN EFFICIENCY BY GENERATION <em>baseline actions / actions spent, per run, in launch order</em></h2>
+      <h2>ACTIONS PER LEVEL OF THIS GAME <em>actions spent / human baseline for that level; lower is better. Nothing is carried in from another game.</em></h2>
       <div class="legend" id="chartLegend"></div>
       <div class="chart" id="chart"></div>
     </div>
     <div class="panel lessonsp">
-      <h2>LESSONS <em id="lessonInfo"></em></h2>
+      <h2>LESSONS LEARNED IN THIS GAME <em id="lessonInfo"></em></h2>
       <div class="scroll" id="lessons"></div>
     </div>
   </section>
@@ -118,6 +121,7 @@
 <div class="tip" id="tip" hidden></div>
 <script src="/static/controller.js"></script>
 <script src="/static/memory.js"></script>
+<script src="/static/resize.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>
