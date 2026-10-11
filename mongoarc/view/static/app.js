@@ -18,7 +18,9 @@ async function api(path) {
   return r.json();
 }
 
-const FRAME_MS = 60, STEP_GAP_MS = 220, PAGE = 100, EV_PAGE = 500, SPEEDS = [1, 2, 4, 8, 16];
+// PAGE is small on purpose: a real ARC-AGI-3 action carries a dozen or more 64x64 boards, so 100 rows are
+// several megabytes and seconds of waiting before the first board. 25 rows put a board on screen in about a second.
+const FRAME_MS = 60, STEP_GAP_MS = 220, PAGE = 25, EV_PAGE = 500, SPEEDS = [1, 2, 4, 8, 16];
 // ARC palette accents, ordered so neighbouring generations stay distinct under colour-vision deficiency.
 const GEN_COLORS = ['#1E93FF', '#FFDC00', '#E53AA3', '#4FCC30', '#A356D6', '#FF851B'];
 const genColor = (g) => (Number.isInteger(g) ? GEN_COLORS[g % GEN_COLORS.length] : '#8a94a3');
@@ -32,9 +34,9 @@ const S = {
   follow: !q.get('run'), wantRun: q.get('run'),
   wantPos: /^\d+$/.test(q.get('n') || '') ? +q.get('n') : null,
   runs: [], runsLoaded: false, runId: null, run: null,
-  actions: [], stats: [], statTail: null, statN: -1, statsOk: true, base: 0, loadedTo: -1, pos: -1,
+  actions: [], early: [], stats: [], statTail: null, statN: -1, statsOk: true, base: 0, loadedTo: -1, pos: -1,
   events: [], lastSeq: 0, feedStart: 0, feedEnd: 0, feedNone: true, feedPinned: true,
-  rulebooks: [], rbKey: null, rbDirty: true, liveInit: false, settled: false,
+  rulebooks: [], rbKey: null, rbDirty: true, rbLoaded: false, evLoaded: false, liveInit: false, settled: false,
   lessons: [], gens: [], evoSig: '', evoDirty: true, evoPending: false, sig: {},
   epoch: 0,   // bumped when the run or mode changes; stale async work checks it
   play: 0,    // bumped on every seek; stale animation callbacks check it
@@ -140,7 +142,7 @@ function animate(a, speed, tok, done) {
   })();
 }
 function syncController() {  // rebuild pad counters, tape and last click for the current position, without animating
-  const rows = [];
+  const rows = S.early.slice();  // a run joined part-way: the presses before its first loaded board count too
   for (let k = Math.max(S.base, 0); k <= S.pos; k++) if (S.actions[k]) rows.push(S.actions[k]);
   AC.load(rows);
   const a = S.actions[S.pos]; if (a) AC.setAvailable(a.available_actions);
@@ -197,7 +199,11 @@ async function loadHistory(ep, id, upto) {
     const list = await api(`/api/runs/${enc(id)}/actions?after_n=${after}&limit=${Math.min(500, upto - 1 - after)}&frames=0`);
     if (ep !== S.epoch) return;
     if (!list.length) break;
-    for (const a of list) if (Number.isInteger(a.n) && a.n < upto) pushStats(a);
+    for (const a of list) {
+      if (!Number.isInteger(a.n) || a.n >= upto) continue;
+      pushStats(a);
+      S.early.push({ action: a.action, params: a.params });  // what was pressed, for the pad counters
+    }
     after = list[list.length - 1].n;
   }
   if (S.statN !== upto - 1) S.statsOk = false;
@@ -215,11 +221,12 @@ function ingestEvents(list) {
 async function selectRun(id, mode) {
   const ep = ++S.epoch;
   stopPlay();
-  Object.assign(S, { runId: id, run: null, actions: [], stats: [], statTail: null, statN: -1, statsOk: true,
+  Object.assign(S, { runId: id, run: null, actions: [], early: [], stats: [], statTail: null, statN: -1, statsOk: true,
     base: 0, loadedTo: -1, pos: -1, events: [], lastSeq: 0, feedStart: 0, feedEnd: 0, feedNone: true, feedPinned: true,
-    rulebooks: [], rbKey: null, rbDirty: true, settled: false, pollN: 0, sig: {} });
+    rulebooks: [], rbKey: null, rbDirty: true, rbLoaded: false, evLoaded: false, settled: false, pollN: 0, sig: {} });
   if (mode) S.mode = mode;
   AC.reset();
+  MB.at = 0;  // this run's notes on the next tick, not a second and a half later
   $('#feedIn').replaceChildren();
   clearBoard(`Loading ${id}`);
   let r, base = 0;
@@ -278,23 +285,26 @@ async function pollRun() {
       S.run = r;
     }
     let got = 0;
-    for (let page = 0; page < 5; page++) {
-      const list = await api(`/api/runs/${enc(id)}/actions?after_n=${S.loadedTo}&limit=${PAGE}`);
-      if (ep !== S.epoch) return;
-      ingestActions(list); got += list.length;
-      afterActions();
-      if (list.length < PAGE) break;
-    }
+    // The feed and the rule book first: they are small, and must not wait behind megabytes of boards.
     for (let page = 0; page < 5; page++) {
       const list = await api(`/api/runs/${enc(id)}/events?after_seq=${S.lastSeq}&limit=${EV_PAGE}`);
       if (ep !== S.epoch) return;
       ingestEvents(list); got += list.length;
       if (list.length < EV_PAGE) break;
     }
+    S.evLoaded = true;
     if (S.rbDirty || n % 6 === 0) {
       const rb = await api(`/api/runs/${enc(id)}/rulebooks`);
       if (ep !== S.epoch) return;
-      S.rulebooks = rb; S.rbDirty = false; S.rbKey = null;
+      S.rulebooks = rb; S.rbDirty = false; S.rbLoaded = true;  // syncRulebook redraws only when what it shows has changed
+    }
+    syncFeed(); syncRulebook();
+    for (let page = 0; page < 8; page++) {
+      const list = await api(`/api/runs/${enc(id)}/actions?after_n=${S.loadedTo}&limit=${PAGE}`);
+      if (ep !== S.epoch) return;
+      ingestActions(list); got += list.length;
+      afterActions();
+      if (list.length < PAGE) break;
     }
     S.settled = got === 0 && runSettled();
     renderHud(); renderHarness(); syncScrub(); syncFeed(); syncRulebook(); renderMode();
@@ -459,14 +469,18 @@ function syncRulebook() {
   let rb = null;
   if (S.mode === 'live') rb = S.rulebooks[S.rulebooks.length - 1] || null;
   else for (const b of S.rulebooks) if ((Number.isInteger(b.action_n) ? b.action_n : -1) <= S.pos) rb = b;
-  const key = rb ? rb._id : 'none:' + S.rulebooks.length;
+  // Redrawing returns the panel to its first new rule, so it happens only when the content differs: a reader
+  // scrolling the rule book during a live game keeps their place between polls.
+  const key = rb ? [rb._id, rb.version, S.rulebooks.length, (rb.verified || []).length, (rb.refuted || []).length, (rb.open_questions || []).length].join(':')
+    : 'none:' + S.rulebooks.length + ':' + S.rbLoaded;
   if (key === S.rbKey) return;
   S.rbKey = key;
   const box = $('#rulebook');
   box.replaceChildren();
   $('#rbVersion').textContent = rb ? `version ${rb.version} of ${S.rulebooks.length}, at action ${rb.action_n}` : '';
   if (!rb) {
-    return void box.append(el('div', 'none', S.rulebooks.length ? 'No rules recorded up to this action.'
+    return void box.append(el('div', 'none', S.run && !S.rbLoaded ? 'Loading the rule book.'
+      : S.rulebooks.length ? 'No rules recorded up to this action.'
       : 'No rule book yet. The agent records what it verified each time it clears a level.'));
   }
   const wrap = el('div', 'rb'), added = rb.added || {};
@@ -495,8 +509,10 @@ async function pollMemory() {
   if (MB.busy || S.tab !== 'live' || Date.now() - MB.at < 1500) return;
   MB.busy = true; MB.at = Date.now();
   try {
+    const rid = S.runId;
     const banks = await api('/api/memory/banks');
-    const notes = S.runId ? await api(`/api/memory/notes?run_id=${enc(S.runId)}&limit=20`) : [];
+    const notes = rid ? await api(`/api/memory/notes?run_id=${enc(rid)}&limit=20`) : [];
+    if (rid !== S.runId) { MB.at = 0; return; }  // the run changed while this was in flight: ask again for the new one
     const box = $('#memBanks');
     if (!box.children.length || banks.length !== MB.banks.length) {
       box.replaceChildren(...banks.map((bk) => {
@@ -615,7 +631,7 @@ function syncFeed() {
   if (end === 0) {
     S.feedStart = S.feedEnd = 0; S.feedNone = true;
     return void box.replaceChildren(el('div', 'none', !S.run ? 'No run selected.'
-      : ev.length ? 'No events up to this action.' : 'No events yet for this run.'));
+      : !S.evLoaded ? 'Loading the agent feed.' : ev.length ? 'No events up to this action.' : 'No events yet for this run.'));
   }
   if (end === S.feedEnd && !S.feedNone) return pinFeed();
   if (S.feedNone || end < S.feedEnd || end - S.feedEnd > 200) {  // jumped: rebuild the tail
@@ -695,9 +711,14 @@ function renderTiles(runs) {
   const held = genMeans(runs.filter((r) => r.role === 'validation'));
   const reverted = S.gens.filter((g) => g.status === 'reverted').length;
   if (held.length >= 2) {  // the same held-out games under every generation: the only like-for-like figure
-    const a = held[0], b = held.find((h) => active && h.gen === active._id) || held[held.length - 1];
+    // Against the active generation; when the active one is the baseline itself (the candidate lost on the
+    // held-out game and was reverted), against the newest generation that was validated, named as reverted.
+    const a = held[0], act = held.find((h) => active && h.gen === active._id);
+    const b = act && act !== a ? act : held[held.length - 1];
+    const bGen = S.gens.find((g) => g._id === b.gen);
+    const note = bGen && bGen.status === 'reverted' ? `, G${b.gen} REVERTED` : reverted ? `, ${reverted} GEN REVERTED` : '';
     box.append(tile([el('small', null, fmt(a.mean) + ' → '), el('span', b.mean >= a.mean ? 'up' : 'down', fmt(b.mean))],
-      `HELD-OUT EFFICIENCY G${a.gen} → G${b.gen}` + (reverted ? `, ${reverted} GEN REVERTED` : '')));
+      `HELD-OUT EFFICIENCY G${a.gen} → G${b.gen}` + note));
   } else if (means.length >= 2) {
     const a = means[0], b = means[means.length - 1];
     box.append(tile([el('small', null, fmt(a.mean) + ' → '), el('span', b.mean >= a.mean ? 'up' : 'down', fmt(b.mean))],
@@ -770,7 +791,7 @@ function renderChart(runs) {
   const roles = new Set(runs.map((r) => r.role));
   if (roles.has('validation')) leg.append(item('dia', null, 'held-out validation run'));
   if (roles.has('control')) leg.append(item('ring', null, 'control: no memory, no lessons'));
-  const L = 62, R = 14, T = 22, B = 62, pw = W - L - R, ph = H - T - B, slot = pw / runs.length;
+  const L = 62, R = 14, T = 32, B = 62, pw = W - L - R, ph = H - T - B, slot = pw / runs.length;
   const x = (i) => L + (i + 0.5) * slot, y = (v) => T + (1 - clamp(v, 0, 1)) * ph;
   const s = svg('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Run efficiency and completion in launch order, grouped by harness generation' });
   let start = 0;
@@ -778,12 +799,12 @@ function renderChart(runs) {
     if (i < runs.length && runs[i].generation === runs[start].generation) continue;
     const g = runs[start].generation, x0 = L + start * slot, w = (i - start) * slot, col = genColor(g);
     const mean = runs.slice(start, i).reduce((a, r) => a + r.metrics.efficiency, 0) / (i - start);
-    const head = svg('text', { x: x0 + 20, y: T - 7 });
+    const head = svg('text', { x: x0 + 20, y: T - 16 });
     head.append(svg('tspan', { class: 't' }, Number.isInteger(g) ? 'GEN ' + g : 'NO GEN'));
     if (w > 150) head.append(svg('tspan', { dx: 10 }, 'mean '), svg('tspan', { class: 'v' }, fmt(mean)));
     s.append(svg('rect', { x: x0, y: T, width: w, height: ph, fill: col, opacity: 0.07 }),
-      svg('rect', { x: x0 + 6, y: T - 16, width: 9, height: 9, fill: col }), head);
-    if (start) s.append(svg('line', { x1: x0, x2: x0, y1: T - 18, y2: T + ph, stroke: '#3a4656', 'stroke-width': 1 }));
+      svg('rect', { x: x0 + 6, y: T - 25, width: 9, height: 9, fill: col }), head);
+    if (start) s.append(svg('line', { x1: x0, x2: x0, y1: T - 27, y2: T + ph, stroke: '#3a4656', 'stroke-width': 1 }));
     s.append(svg('line', { x1: x0 + 4, x2: x0 + w - 4, y1: y(mean), y2: y(mean), stroke: '#b3bdca', 'stroke-width': 1.5, 'stroke-dasharray': '5 4' }));
     start = i;
   }
@@ -896,7 +917,12 @@ function step(dir) {
 function bind() {
   for (const b of $('#tabs').children) b.onclick = () => setTab(b.dataset.tab);
   for (const b of $('#modeSeg').children) b.onclick = () => setMode(b.dataset.mode);
-  for (const b of $('#speedSeg').children) b.onclick = () => { S.speed = +b.dataset.speed; renderMode(); syncUrl(); };
+  for (const b of $('#speedSeg').children) b.onclick = () => {
+    // A narrow transport (720p) shows only the current speed: that one button steps to the next speed.
+    const compact = [...$('#speedSeg').children].some((x) => x !== b && x.offsetParent === null);
+    S.speed = compact ? SPEEDS[(SPEEDS.indexOf(S.speed) + 1) % SPEEDS.length] : +b.dataset.speed;
+    renderMode(); syncUrl();
+  };
   $('#runSel').onchange = (e) => {
     const id = e.target.value;
     S.follow = !id;

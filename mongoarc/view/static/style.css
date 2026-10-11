@@ -60,7 +60,7 @@ a.run:hover { color: #fff; }
 .live { display: grid; grid-template-columns: auto minmax(270px, .9fr) minmax(300px, 1.15fr); gap: 10px; padding: 10px; min-height: 0; }
 .stage { --board: min(calc(100vh - 44px - 20px - 38px - 44px - 24px - var(--pad-h)), 52vw); --pad-h: 92px; width: var(--board); display: flex; flex-direction: column; gap: 8px; min-height: 0; }
 .stagehead { height: 38px; display: flex; align-items: center; gap: 10px; min-width: 0; }
-.game { font: 700 24px var(--mono); letter-spacing: -.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 5ch; max-width: 50%; }
+.game { font: 700 24px var(--mono); letter-spacing: -.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 0 auto; min-width: 5ch; max-width: 50%; }
 .stagehead .chip { flex: none; }
 .stagehead .grow { flex: 1 1 0; }
 .lastact { font: 700 20px var(--mono); color: var(--yellow); white-space: nowrap; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -85,10 +85,24 @@ a.run:hover { color: #fff; }
 .livebar b { color: var(--red); letter-spacing: .12em; }
 .livebar.idle i { background: var(--ink3); animation: none; } .livebar.idle b { color: var(--ink3); }
 .replaybar { display: flex; align-items: center; gap: 6px; width: 100%; }
-.replaybar button { font: 700 12px var(--mono); padding: 5px 9px; }
+.replaybar button { font: 700 12px var(--mono); padding: 5px 9px; white-space: nowrap; flex: none; }
 .replaybar .play { background: var(--yellow); color: #000; border-color: var(--yellow); min-width: 64px; }
 .replaybar input[type=range] { flex: 1; min-width: 60px; accent-color: var(--yellow); }
 .pos { font: 700 13px var(--mono); color: var(--ink); min-width: 78px; text-align: right; white-space: nowrap; }
+/* A 720p projector leaves the board, and so this bar, about 460 px: the five speed buttons fold into the current
+   one (a click steps to the next speed, see bind() in app.js), which gives the scrub slider its room back. */
+.transport { container-type: inline-size; }
+.replaybar .seg { flex: none; }
+@container (max-width: 600px) {
+  .replaybar { gap: 5px; }
+  .replaybar button { padding: 5px 8px; }
+  .replaybar .play { min-width: 60px; }
+  .pos { min-width: 0; padding: 0 2px; }
+  #speedSeg button:not(.on) { display: none; }
+  #speedSeg button.on { border-radius: 4px; margin: 0; min-width: 46px; padding: 5px 6px; font-size: 12px; }
+  #speedSeg button.on::after { content: " \25B8"; }
+}
+@container (max-width: 400px) { #btnFirst { display: none; } }
 
 .side { display: flex; flex-direction: column; gap: 10px; min-height: 0; min-width: 0; }
 .hud { flex: none; padding: 10px 12px 12px; }
@@ -220,6 +234,8 @@ details.add pre { margin: 5px 0 0; padding: 7px 9px; background: #05070a; border
 
 /* short screens (720p projectors): tighter counters so the rule book and the carried lessons keep their room */
 @media (max-height: 800px) {
+  .game { font-size: 19px; }  /* a 13-character game id whole, with room left for the action tape */
+  .stagehead { gap: 8px; }
   .hud { padding: 8px 12px 9px; }
   .hud .num { font-size: clamp(30px, 3vw, 44px); }
   .hud .num.sm { font-size: clamp(24px, 2.3vw, 34px); }
@@ -251,7 +267,7 @@ details.add pre { margin: 5px 0 0; padding: 7px 9px; background: #05070a; border
 .mb { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 6px 8px; background: #0b0f15; border: 1px solid var(--line); border-left: 3px solid #8a94a3; border-radius: 4px; color: var(--ink); cursor: pointer; text-align: left; min-width: 0; }
 .mb:hover { background: #121924; }
 .mb b { font: 700 24px/1 var(--mono); }
-.mb span { font: 700 10px/1.2 var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--ink2); white-space: nowrap; }
+.mb span { font: 700 10px/1.2 var(--mono); letter-spacing: .04em; text-transform: uppercase; color: var(--ink2); }  /* wraps: "harness gens" is wider than a tile */
 .mb-lessons { border-left-color: #FFDC00; } .mb-notes { border-left-color: #1E93FF; } .mb-rulebooks { border-left-color: #4FCC30; } .mb-generations { border-left-color: #A356D6; }
 .mb.pulse { animation: mbpulse 1.2s ease-out; }
 @keyframes mbpulse { 0% { background: rgba(255,220,0,.45); } 100% { background: #0b0f15; } }

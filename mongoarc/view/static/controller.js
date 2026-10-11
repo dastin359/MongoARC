@@ -90,8 +90,8 @@
   function fmtCount(n) { return !n ? '' : n < 1000 ? '×' + n : '×' + (n / 1000).toFixed(n < 10000 ? 1 : 0) + 'k'; }
   function clickText() {
     var c = S.lastClick;
-    if (!c) return 'click x=-- y=--';
-    return c.x == null ? 'click x=? y=?' : 'click x=' + c.x + ' y=' + c.y;
+    if (!c) return 'x=-- y=--';
+    return c.x == null ? 'x=? y=?' : 'x=' + c.x + ' y=' + c.y;
   }
   function dress(root) {
     var m = S.speed;
@@ -132,7 +132,11 @@
     var b = p.btn.ACTION6; if (!b) return;
     var c = S.lastClick, has = !!c && c.x != null;
     b.classList.toggle('ctl-has', !!c);
-    p.clickTxt.textContent = clickText();
+    // the word is its own element so a narrow pad can drop it and keep both coordinates whole
+    p.clickTxt.textContent = '';
+    var word = h('span', 'ctl-clickword'); word.textContent = 'click ';
+    p.clickTxt.appendChild(word);
+    p.clickTxt.appendChild(document.createTextNode(clickText()));
     var side = (c && c.side) || SIDE;
     p.mini.style.setProperty('--ctl-mx', has ? String(clamp((c.x + 0.5) / side * 100, 14, 86)) : '50');
     p.mini.style.setProperty('--ctl-my', has ? String(clamp((c.y + 0.5) / side * 100, 14, 86)) : '50');

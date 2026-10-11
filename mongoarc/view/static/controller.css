@@ -174,7 +174,8 @@
   .ctl-pad.ctl-row .ctl-pad-in { gap: 10px; }
   .ctl-pad.ctl-row .ctl-mini { display: none; }
   .ctl-pad.ctl-row .ctl-clickind { gap: 8px; padding: 6px 8px; }
-  .ctl-pad.ctl-row .ctl-clicktxt { font-size: 14px; }
+  .ctl-pad.ctl-row .ctl-clicktxt { font-size: 15px; }
+  .ctl-pad.ctl-row .ctl-clickword { display: none; }  /* "x=47 y=4" whole beats "click x=47 ..." cut short */
 }
 
 /* --------------------------------------------------------- board overlay */
