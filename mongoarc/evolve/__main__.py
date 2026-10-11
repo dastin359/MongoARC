@@ -27,6 +27,10 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--effort", default=None)
     r.add_argument("--timeout", type=float, default=3600.0)
     r.add_argument("--margin", type=float, default=loop.REVERT_MARGIN)
+    r.add_argument("--validate", default=None,
+                   help="comma-separated held-out games: each new generation is scored on them and reverted "
+                        "if it does worse than its parent by more than --margin")
+    r.add_argument("--val-repeat", type=int, default=1, help="validation runs per held-out game per generation")
     sub.add_parser("status", help="generations, fitness and lessons")
     sub.add_parser("init", help="create indexes and generation 0")
     d = sub.add_parser("distill", help="build the next generation from one run")
@@ -42,7 +46,9 @@ def main(argv: list[str] | None = None) -> int:
             steps = loop.run([g.strip() for g in a.games.split(",") if g.strip()], agent=a.agent,
                              arc_root=a.arc_root, label=a.label, runs_root=a.runs_root, distiller=a.distiller,
                              repeat=a.repeat, pause=a.pause, model=a.model, effort=a.effort, timeout=a.timeout,
-                             margin=a.margin, distill_model=a.distill_model)
+                             margin=a.margin, distill_model=a.distill_model,
+                             validate_on=[g.strip() for g in (a.validate or '').split(',') if g.strip()],
+                             val_repeat=a.val_repeat)
         except KeyboardInterrupt:
             print("[evolve] interrupted; the game in flight was stopped and its run marked", flush=True)
             print(loop.status(D.get_db()))

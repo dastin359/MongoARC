@@ -139,7 +139,11 @@ def select(db: Database, margin: float = REVERT_MARGIN) -> dict | None:
     parent = db[D.GENERATIONS].find_one({"_id": gen["parent"]})
     if parent is None:
         return None
-    mine, theirs = _efficiency_by_game(db, gen["_id"]), _efficiency_by_game(db, parent["_id"])
+    # Held-out validation runs, when there are any, are the only fair comparison: training runs are on
+    # different games per generation and control runs are a different arm.
+    mine = _efficiency_by_game_role(db, gen["_id"], "validation") or _efficiency_by_game(db, gen["_id"])
+    theirs = (_efficiency_by_game_role(db, parent["_id"], "validation")
+              or _efficiency_by_game(db, parent["_id"]))
     shared = sorted(g for g in mine if g in theirs)
     if not shared:
         return None
@@ -165,6 +169,50 @@ def select(db: Database, margin: float = REVERT_MARGIN) -> dict | None:
             raise
         swap()
     return {"reverted": gen["_id"], "reactivated": parent["_id"], "why": why, "games": shared}
+
+
+def validate(db: Database, gen: int, games: list[str], root: Path, label: str, repeat: int,
+             launch_opts: list[str], timeout: float) -> list[str]:
+    """Score generation `gen` on the held-out games it has not yet played `repeat` times.
+
+    Validation runs are evaluated and nothing else: they are never distilled
+    and never reach later games' memory, so the games stay held out. Returns
+    the ids of the runs played.
+    """
+    played = []
+    for game in games:
+        have = len(_efficiency_by_game_role(db, gen, "validation").get(game, []))
+        for k in range(have, repeat):
+            n = k
+            while True:
+                attempt = root / f"{label}-val-g{gen:02d}-{game}-{n}"
+                try:
+                    attempt.mkdir(parents=True)
+                    break
+                except FileExistsError:
+                    n += 1
+            cmd = [sys.executable, "-m", "mongoarc.launch", "--game", game, "--out-dir", str(attempt), "--gen", str(gen),
+                   "--label", f"{label}-val", "--role", "validation", "--timeout", str(timeout)] + launch_opts
+            print(f"[evolve] generation {gen}: validating on held-out {game} ({k + 1}/{repeat})", flush=True)
+            code = _play(cmd, attempt / "driver.log", float(timeout) + 600.0)
+            run_id = _close_run(db, attempt, f"the launcher exited ({code}) without recording an ending")
+            if run_id is None or unusable(db, run_id) or not wait_ingested(db, run_id, attempt, game):
+                print(f"[evolve] validation run on {game} unusable; skipped", flush=True)
+                continue
+            m = evaluate_run(db, run_id)
+            update_fitness(db, gen)
+            played.append(run_id)
+            print(f"[evolve] {run_id}: held-out {m['levels_cleared']}/{m['win_levels']} levels, "
+                  f"{m['actions_total']} actions, efficiency {m['efficiency']}", flush=True)
+    return played
+
+
+def _efficiency_by_game_role(db: Database, gen: int, role: str) -> dict[str, list[float]]:
+    out: dict[str, list[float]] = {}
+    for r in db[D.RUNS].find({"generation": gen, "role": role, "metrics.efficiency": {"$ne": None}},
+                             {"game_id": 1, "metrics.efficiency": 1}):
+        out.setdefault(r.get("game_id"), []).append(float(r["metrics"]["efficiency"]))
+    return out
 
 
 def after_game(db: Database, run_id: str, distiller: str, margin: float = REVERT_MARGIN,
@@ -237,7 +285,8 @@ def _sigterm(signum, frame):
 def run(games: list[str], *, agent: str = "claude", arc_root: str | None = None, label: str = "evolve",
         runs_root: str | None = None, distiller: str = "claude", repeat: int = 1, pause: float = 0.2,
         model: str | None = None, effort: str | None = None, timeout: float = 3600.0,
-        margin: float = REVERT_MARGIN, distill_model: str | None = None) -> list[dict]:
+        margin: float = REVERT_MARGIN, distill_model: str | None = None,
+        validate_on: list[str] | None = None, val_repeat: int = 1) -> list[dict]:
     db = D.get_db()
     D.ensure_indexes(db)
     genome.ensure_gen0(db)
@@ -247,6 +296,10 @@ def run(games: list[str], *, agent: str = "claude", arc_root: str | None = None,
     main_thread = threading.current_thread() is threading.main_thread()
     previous = signal.signal(signal.SIGTERM, _sigterm) if main_thread else None
     out, attempt = [], None
+    launch_opts = ["--agent", agent, "--pause", str(pause)]
+    for flag, val in (("--arc-root", arc_root), ("--model", model), ("--effort", effort)):
+        if val:
+            launch_opts += [flag, val]
     try:
         for k in range(repeat):
             for game in games:
@@ -254,6 +307,8 @@ def run(games: list[str], *, agent: str = "claude", arc_root: str | None = None,
                     print("[evolve] the collector thread died; restarting it", flush=True)
                     collector = start_collector(db, root)
                 gen = genome.active(db)["_id"]
+                if validate_on:                   # the incumbent needs a held-out score to be compared against
+                    validate(db, gen, validate_on, root, label, val_repeat, launch_opts, timeout)
                 n = k
                 while True:                       # never resume into an earlier attempt, never share one
                     attempt = root / f"{label}-g{gen:02d}-{game}-{n}"
@@ -263,11 +318,7 @@ def run(games: list[str], *, agent: str = "claude", arc_root: str | None = None,
                     except FileExistsError:
                         n += 1
                 cmd = [sys.executable, "-m", "mongoarc.launch", "--game", game, "--out-dir", str(attempt),
-                       "--gen", str(gen), "--agent", agent, "--label", label, "--pause", str(pause),
-                       "--timeout", str(timeout)]
-                for flag, val in (("--arc-root", arc_root), ("--model", model), ("--effort", effort)):
-                    if val:
-                        cmd += [flag, val]
+                       "--gen", str(gen), "--label", label, "--timeout", str(timeout)] + launch_opts
                 print(f"[evolve] generation {gen}: playing {game} in {attempt.name}", flush=True)
                 code = _play(cmd, attempt / "driver.log", float(timeout) + 600.0)
                 why = "the launcher was stopped after running past its time limit" if code is None \
@@ -305,6 +356,21 @@ def run(games: list[str], *, agent: str = "claude", arc_root: str | None = None,
                       + (f", reverted generation {step['reverted']['reverted']}" if step["reverted"] else "")
                       + ")", flush=True)
                 out.append({"game": game, "generation": gen, "exit": code, **step})
+                if validate_on:
+                    # The candidate is kept only if it does not score worse than its parent on games
+                    # neither of them learned from.
+                    cand = step["next_generation"]
+                    last = validate(db, cand, validate_on, root, label, val_repeat, launch_opts, timeout)
+                    undone = select(db, margin)
+                    if undone:
+                        print(f"[evolve] generation {undone['reverted']} REVERTED on held-out games: "
+                              f"{undone['why']}", flush=True)
+                        harness_event(db, (last or [run_id])[-1], "generation_reverted",
+                                      f"generation {undone['reverted']} reverted: {undone['why']}",
+                                      generation=undone["reactivated"])
+                        out[-1]["reverted_on_validation"] = undone
+                    else:
+                        print(f"[evolve] generation {cand} kept after held-out validation", flush=True)
     except KeyboardInterrupt:
         if attempt is not None:                   # interrupted mid-game: the launcher has been stopped by now
             _close_run(db, attempt, "the evolve loop was interrupted")

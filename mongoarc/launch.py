@@ -206,7 +206,8 @@ def launch(args: argparse.Namespace) -> dict:
     fields = {"game_id": args.game, "out_dir": str(out_dir), "label": args.label, "agent": args.agent,
               "model": model, "effort": effort, "generation": gen["_id"], "lessons_used": lesson_ids,
               "baseline_actions": baseline or None, "status": "running", "started_at": t0, "updated_at": t0,
-              "ended_at": None, "win_levels": len(baseline) or None}
+              "ended_at": None, "win_levels": len(baseline) or None, "memory_tool": not args.no_memory,
+              "role": args.role or ("control" if args.no_memory else "train")}
     base_id = f"g{gen['_id']}-{args.game}-{t0.strftime('%Y%m%dT%H%M%S')}"
     if dry:
         run_id = run_id or base_id
@@ -235,7 +236,7 @@ def launch(args: argparse.Namespace) -> dict:
         print(json.dumps(out, indent=2), flush=True)
         return out
 
-    memory, memory_url = start_memory()
+    memory, memory_url = (None, None) if args.no_memory else start_memory()
     addendum = genome.render_addendum(gen, lessons, memory=memory is not None)
 
     original = S.build_workspace
@@ -366,6 +367,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--run-id", default=None)
     p.add_argument("--coach-interval", type=float, default=1.0)
     p.add_argument("--collect", action="store_true", help="also run the collector in this process")
+    p.add_argument("--role", choices=("train", "validation", "control"), default=None,
+                   help="train: evidence for the distiller (default). validation: scores a generation on a held-out "
+                        "game. control: a baseline arm. Only train runs feed later games' memory.")
+    p.add_argument("--no-memory", action="store_true",
+                   help="control arm: no memory.py in the workspace and no memory section in the prompt")
     p.add_argument("--dry-run", action="store_true",
                    help="build the workspace and print what the agent would be given (prompt path, child "
                         "environment with secrets shown as present/absent); no game, nothing written to MongoDB")

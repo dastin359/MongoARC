@@ -45,6 +45,13 @@ def recall(db, run_id: str, query: str, n: int = 5) -> dict:
     with the game they were written in.
     """
     score = {"score": {"$meta": "textScore"}}
+    # Never hand a run the record of its own game: another run of the same game
+    # (a control arm, an earlier attempt) would be the answer sheet, not a prior.
+    game = (db[D.RUNS].find_one({"_id": run_id}, {"game_id": 1}) or {}).get("game_id")
+    same_game = [r["_id"] for r in db[D.RUNS].find({"game_id": game}, {"_id": 1})] if game else [run_id]
+    # Held-out and baseline runs must not teach anyone: a validation game that leaked into
+    # memory would no longer be held out.
+    same_game += [r["_id"] for r in db[D.RUNS].find({"role": {"$in": ["validation", "control"]}}, {"_id": 1})]
     by_score = [("score", {"$meta": "textScore"})]
     lessons: list[dict] = []
     notes: list[dict] = []
@@ -53,9 +60,9 @@ def recall(db, run_id: str, query: str, n: int = 5) -> dict:
         text = {"$text": {"$search": query}}
         lessons = list(db[D.LESSONS].find({"status": "active", **text}, {"text": 1, "kind": 1, **score})
                        .sort(by_score).limit(n))
-        notes = list(db[D.NOTES].find({"run_id": {"$ne": run_id}, **text},
+        notes = list(db[D.NOTES].find({"run_id": {"$nin": same_game}, **text},
                                       {"text": 1, "path": 1, "game_id": 1, "refs": 1, **score}).sort(by_score).limit(3))
-        books = list(db[D.RULEBOOKS].find({"run_id": {"$ne": run_id}, **text},
+        books = list(db[D.RULEBOOKS].find({"run_id": {"$nin": same_game}, **text},
                                           {"verified": 1, "refuted": 1, "run_id": 1, "version": 1, **score})
                      .sort(by_score).limit(8))
     if not lessons:

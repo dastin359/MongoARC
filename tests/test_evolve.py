@@ -104,7 +104,7 @@ def test_addendum_shape():
               "stats": {"injected": 2}}
     # `tools` is reserved and always empty (SCHEMA.md); a stale entry must not reach the prompt
     text = genome.render_addendum({"_id": 4, "tools": [{"name": "bfs", "code": "", "why": "path search"}]}, [lesson])
-    assert "## Carried lessons (harness generation 4)" in text and "prior to test" in text
+    assert "## Carried lessons (harness generation 4)" in text and "a prior, not a fact" in text
     assert "earlier games" in text and "L0001" in text and "toolkit" not in text and "bfs" not in text
     # the agent can only use the memory it is told about: recall, notes/ for prose, scripts/ for code
     assert "python3 memory.py recall" in text and "`notes/`" in text and "`scripts/`" in text

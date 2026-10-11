@@ -637,6 +637,7 @@ function scoredRuns() {
   return S.runs.filter((r) => r.metrics && typeof r.metrics.efficiency === 'number')
     .sort((a, b) => String(a.started_at).localeCompare(String(b.started_at)) || String(a._id).localeCompare(String(b._id)));
 }
+const ROLE = { validation: 'held-out validation run', control: 'control run: no memory, no lessons', train: 'training run' };
 function genMeans(runs) {  // [{gen, mean, n}] in generation order
   const m = new Map();
   for (const r of runs) {
@@ -647,7 +648,7 @@ function genMeans(runs) {  // [{gen, mean, n}] in generation order
   return [...m.values()].filter((s) => s.gen != null).sort((a, b) => a.gen - b.gen).map((s) => ({ ...s, mean: s.sum / s.n }));
 }
 function markEvolution() {
-  const sig = JSON.stringify([S.gens, S.lessons, S.runs.map((r) => [r._id, r.generation, r.status, r.metrics && r.metrics.efficiency, r.metrics && r.metrics.completion])]);
+  const sig = JSON.stringify([S.gens, S.lessons, S.runs.map((r) => [r._id, r.generation, r.status, r.role, r.metrics && r.metrics.efficiency, r.metrics && r.metrics.completion])]);
   if (sig === S.evoSig) return;
   S.evoSig = sig; S.evoDirty = true;
   if (S.tab === 'evolution') renderEvolution();
@@ -665,7 +666,13 @@ function renderTiles(runs) {
     tile(active ? 'G' + active._id : '-', 'ACTIVE GENERATION'),
     tile(String(live), `ACTIVE LESSONS, ${S.lessons.length - live} RETIRED`),
     tile([String(runs.length), el('small', null, ` of ${S.runs.length} runs`)], 'RUNS SCORED'));
-  if (means.length >= 2) {
+  const held = genMeans(runs.filter((r) => r.role === 'validation'));
+  const reverted = S.gens.filter((g) => g.status === 'reverted').length;
+  if (held.length >= 2) {  // the same held-out games under every generation: the only like-for-like figure
+    const a = held[0], b = held.find((h) => active && h.gen === active._id) || held[held.length - 1];
+    box.append(tile([el('small', null, fmt(a.mean) + ' → '), el('span', b.mean >= a.mean ? 'up' : 'down', fmt(b.mean))],
+      `HELD-OUT EFFICIENCY G${a.gen} → G${b.gen}` + (reverted ? `, ${reverted} GEN REVERTED` : '')));
+  } else if (means.length >= 2) {
     const a = means[0], b = means[means.length - 1];
     box.append(tile([el('small', null, fmt(a.mean) + ' → '), el('span', b.mean >= a.mean ? 'up' : 'down', fmt(b.mean))],
       `MEAN EFFICIENCY G${a.gen} → G${b.gen}`));
@@ -734,7 +741,10 @@ function renderChart(runs) {
   const item = (cls, style, text) => { const s = el('span'), i = el('i', cls); if (style) i.style.background = style; s.append(i, text); return s; };
   leg.append(el('span', null, 'efficiency:'), ...gens.map((g) => item('dot', genColor(g), g == null ? 'no generation' : 'gen ' + g)),
     item('bar', null, 'completion: levels cleared / total'), item('dash', null, 'generation mean'));
-  const L = 62, R = 14, T = 22, B = 46, pw = W - L - R, ph = H - T - B, slot = pw / runs.length;
+  const roles = new Set(runs.map((r) => r.role));
+  if (roles.has('validation')) leg.append(item('dia', null, 'held-out validation run'));
+  if (roles.has('control')) leg.append(item('ring', null, 'control: no memory, no lessons'));
+  const L = 62, R = 14, T = 22, B = 62, pw = W - L - R, ph = H - T - B, slot = pw / runs.length;
   const x = (i) => L + (i + 0.5) * slot, y = (v) => T + (1 - clamp(v, 0, 1)) * ph;
   const s = svg('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Run efficiency and completion in launch order, grouped by harness generation' });
   let start = 0;
@@ -762,16 +772,21 @@ function renderChart(runs) {
   s.append(svg('polyline', { points: runs.map((r, i) => `${x(i)},${y(r.metrics.efficiency)}`).join(' '), fill: 'none', stroke: '#8a94a3', 'stroke-width': 2, 'stroke-linejoin': 'round' }));
   const every = Math.ceil(runs.length / Math.max(1, Math.floor(pw / 38)));
   s.append(svg('text', { x: L - 8, y: T + ph + 21, 'text-anchor': 'end', class: 't' }, 'RUN'),
-    svg('text', { x: L - 8, y: T + ph + 37, 'text-anchor': 'end', class: 't' }, 'LEVELS'));
+    svg('text', { x: L - 8, y: T + ph + 37, 'text-anchor': 'end', class: 't' }, 'LEVELS'),
+    svg('text', { x: L - 8, y: T + ph + 53, 'text-anchor': 'end', class: 't' }, 'GAME'));
   runs.forEach((r, i) => {
     const m = r.metrics;
-    s.append(svg('circle', { cx: x(i), cy: y(m.efficiency), r: 6.5, fill: genColor(r.generation), stroke: '#0e1218', 'stroke-width': 2 }));
+    const cx = x(i), cy = y(m.efficiency), col = genColor(r.generation);
+    if (r.role === 'validation') s.append(svg('rect', { x: cx - 6.5, y: cy - 6.5, width: 13, height: 13, fill: col, stroke: '#fff', 'stroke-width': 2, transform: `rotate(45 ${cx} ${cy})` }));
+    else if (r.role === 'control') s.append(svg('circle', { cx, cy, r: 6, fill: '#0e1218', stroke: col, 'stroke-width': 3 }));
+    else s.append(svg('circle', { cx, cy, r: 6.5, fill: col, stroke: '#0e1218', 'stroke-width': 2 }));
     if (i % every === 0) {
+      s.append(svg('text', { x: cx, y: T + ph + 53, 'text-anchor': 'middle', class: 'g' }, String(r.game_id || '').split('-')[0]));
       s.append(svg('text', { x: x(i), y: T + ph + 21, 'text-anchor': 'middle' }, String(i + 1)));
       if (m.win_levels) s.append(svg('text', { x: x(i), y: T + ph + 37, 'text-anchor': 'middle', class: m.levels_cleared < m.win_levels ? 'v' : '' }, `${m.levels_cleared}/${m.win_levels}`));
     }
     const hit = svg('rect', { x: L + i * slot, y: T, width: slot, height: ph + B, class: 'hit' });
-    hit.addEventListener('mousemove', (e) => showTip(e, `${r._id}\n${r.game_id || ''} · ${Number.isInteger(r.generation) ? 'gen ' + r.generation : 'no generation'} · ${r.status}\n`
+    hit.addEventListener('mousemove', (e) => showTip(e, `${r._id}\n${r.game_id || ''} · ${Number.isInteger(r.generation) ? 'gen ' + r.generation : 'no generation'} · ${ROLE[r.role] || 'training run'} · ${r.status}\n`
       + `efficiency  ${fmt(m.efficiency)}\ncompletion  ${fmt(m.completion)}  (${m.levels_cleared}/${m.win_levels} levels)\n`
       + `actions     ${m.actions_total} against a baseline of ${m.baseline_total}\nclick to replay`));
     hit.addEventListener('mouseleave', hideTip);

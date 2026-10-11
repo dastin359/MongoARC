@@ -241,3 +241,6 @@ details.add pre { margin: 5px 0 0; padding: 7px 9px; background: #05070a; border
 .tapeslot { flex: 0 1 52%; min-width: 0; }
 .marker { display: none !important; }  /* the controller overlay draws the click */
 .memtab { min-height: 0; min-width: 0; overflow: hidden; }
+.legend i.dia { width: 10px; height: 10px; background: #8a94a3; border: 1.5px solid #fff; transform: rotate(45deg); border-radius: 0; }
+.legend i.ring { width: 11px; height: 11px; background: transparent; border: 3px solid #8a94a3; border-radius: 50%; }
+.chart text.g { fill: #8a94a3; font: 500 10px var(--mono); }

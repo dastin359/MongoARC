@@ -198,9 +198,18 @@ The evidence holds the run's score per level, the rule book the agent committed 
 the agent's own notes (agent_notes), what it searched its memory for, and the lessons the harness carries.
 
 Rules for lessons:
-- A lesson must transfer to a game the agent has never seen. Never name a game, a level layout, a colour \
-index tied to one game, or any coordinates.
-- One or two sentences, phrased as a prior to test early, not a fact.
+- A lesson must be usable in a game the agent has never seen. Never name a game, describe a level layout \
+or give coordinates.
+- Say what to look for and what it did. When the run verified what a kind of object does, keep its \
+observable signature: its colour as "colour <index> (<name>)", its shape or size, how it behaves; and which \
+action did what, written as ACTION1 .. ACTION7 (never as bare digit lists). Games under this harness often \
+share such conventions, so a concrete signature saves more actions than general advice. Phrase it as what \
+an earlier game showed, for the agent to check against its first frame. Colour indices: 0 white, 1 light \
+grey, 2 grey, 3 dark grey, 4 charcoal, 5 black, 6 magenta, 7 pink, 8 red, 9 blue, a light blue, b yellow, \
+c orange, d maroon, e green, f purple.
+- Prefer the lessons that would have saved the most actions in this run: look at the levels whose actions \
+far exceeded the baseline, and at deaths.
+- One or two sentences.
 - kind is one of: mechanic_prior, strategy, pitfall, tooling.
 - Add at most {max_add}. Prefer none over a vague one. Do not restate a lesson already carried, and do not \
 hand back one listed under retired_lessons unless this run gives new evidence for it.

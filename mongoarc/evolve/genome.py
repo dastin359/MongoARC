@@ -30,14 +30,19 @@ NETWORK_NOTE = (
 # so this section of the workspace CLAUDE.md is the only place the agent can learn of them.
 MEMORY_NOTE = (
     "### Long-term memory\n\n"
-    "This game starts with an empty `notes/` and `scripts/`. What earlier games learned is reached by search:\n\n"
-    "- `python3 memory.py recall <words>` searches the lessons distilled across earlier games and the notes "
-    "and verified rules their solvers left. Everything it returns describes OTHER games: a prior to test "
-    "early, never a fact about this one. Use it when you meet something you cannot explain, before spending "
-    "many actions on a guess. It costs no game actions.\n"
-    "- Prose you save under `notes/` (markdown or plain text) is stored automatically and becomes searchable "
-    "in later games. Write it for the solver of a different game: describe each mechanic and how you "
-    "recognised it, not this game's layout or coordinates.\n"
+    "This game starts with an empty `notes/` and `scripts/`. What earlier games learned is in a memory you "
+    "reach by search:\n\n"
+    "- **Before your first action**, run `python3 memory.py recall <words>` with words for what you see in "
+    "the first frame and the actions on offer (object colours, shapes, \"click\", \"key\", \"wall\", ...). "
+    "Search again whenever something new appears or something you expected did not happen. A search costs "
+    "no game actions. It returns lessons distilled across earlier games plus the notes and verified rules "
+    "their solvers left. All of it describes OTHER games: check it against what you see and what your first "
+    "moves do before relying on it.\n"
+    "- **Each time you clear a level**, write what you verified to `notes/mechanics.md` (create it, then keep "
+    "it up to date). Prose saved under `notes/` is stored in this memory as you write it and becomes "
+    "searchable in later games, so write it for the solver of a different game: what each kind of object "
+    "looked like and did, what each action did, what was fatal, what had to happen in which order. Leave out "
+    "this game's layout and coordinates.\n"
     "- Code goes in `scripts/`. It is not stored; name the script in the note that explains it.\n\n"
     "`memory.py` talks to a service the harness runs on this machine.\n")
 
@@ -107,9 +112,9 @@ def render_addendum(gen: dict, lessons: list[dict], memory: bool = True) -> str:
     live = [l for l in lessons if l.get("status", "active") == "active"]
     if live:
         out += ["These come from earlier games played under this harness, not from the game you are "
-                "playing now. Each one is a prior to test early and cheaply, not a fact: spend a few "
-                "actions confirming or refuting it before you rely on it, and say which in "
-                "`gate.acknowledge(...)`.", ""]
+                "playing now. Each one is a prior, not a fact. Check it against the first frame and against "
+                "what your first few moves do; do not spend actions only to test a lesson. Say in "
+                "`gate.acknowledge(...)` which ones held.", ""]
         for i, l in enumerate(live, 1):
             s = l.get("stats") or {}
             seen = f", carried into {s['injected']} earlier run(s)" if s.get("injected") else ""
