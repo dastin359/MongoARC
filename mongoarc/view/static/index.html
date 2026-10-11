@@ -23,7 +23,7 @@
     <button data-tab="memory">MEMORY</button>
   </nav>
   <div class="grow"></div>
-  <span class="playbox" id="playBox" title="Start a new ARC-AGI-3 game with the agent and its MongoDB memory"><label class="picker">PLAY <select id="gameSel" aria-label="Game to play"><option value="">choose a game</option></select></label><button type="button" id="btnLaunch" disabled>START</button><span id="launchMsg"></span></span>
+  <span class="playbox" id="playBox" title="Start a new ARC-AGI-3 game with the agent and its MongoDB memory"><label class="picker">PLAY <select id="gameSel" aria-label="Game to play"><option value="">choose a game</option></select></label><span class="launchwrap"><button type="button" id="btnLaunch" disabled>START</button><span class="modelpick" id="modelPick" hidden><em>PLAY WITH</em></span></span><span id="launchMsg"></span></span>
   <label class="picker" id="pickerWrap">RUN <select id="runSel" aria-label="Run"></select></label>
   <div class="seg" id="modeSeg">
     <button data-mode="live">LIVE</button>

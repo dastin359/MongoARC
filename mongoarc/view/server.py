@@ -66,6 +66,7 @@ def favicon() -> Response:
 # ---- starting a game from the page. The one thing this server does besides reading MongoDB. ----
 _GAMES: dict = {"at": 0.0, "rows": []}
 PLAY_MODEL = os.environ.get("MONGOARC_PLAY_MODEL", "claude-opus-5-5")
+PLAY_MODELS = {"claude-opus-5": "Opus 5", "claude-opus-5-5": "Opus 5.5"}     # what the page offers
 MAX_RUNNING = 2
 
 
@@ -88,7 +89,8 @@ def _games() -> list[dict]:
 @app.get("/api/games")
 def games():
     try:
-        return _json({"games": _games(), "model": PLAY_MODEL})
+        return _json({"games": _games(), "model": PLAY_MODEL,
+                      "models": [{"id": k, "label": v} for k, v in PLAY_MODELS.items()]})
     except Exception as exc:  # noqa: BLE001 -- no key, no network: the page shows the reason, never a traceback
         return JSONResponse({"games": [], "model": PLAY_MODEL, "error": f"game list unavailable ({type(exc).__name__})"},
                             headers=NO_CACHE)
@@ -100,6 +102,9 @@ def launch(body: dict = Body(...)):
     game = str(body.get("game_id") or "")
     if game not in {g["game_id"] for g in _games()}:
         raise HTTPException(400, "unknown game")
+    model = str(body.get("model") or PLAY_MODEL)
+    if model not in PLAY_MODELS and model != PLAY_MODEL:
+        raise HTTPException(400, "unknown model")
     running = _db()[D.RUNS].count_documents({"status": "running", "updated_at": {"$gte": D.now() - dt.timedelta(minutes=30)}})
     if running >= MAX_RUNNING:
         raise HTTPException(409, f"{running} games are already running; wait for one to finish")
@@ -107,9 +112,9 @@ def launch(body: dict = Body(...)):
     out.parent.mkdir(parents=True, exist_ok=True)
     log = open(str(out) + ".driver.log", "w")
     subprocess.Popen([sys.executable, "-m", "mongoarc.launch", "--game", game, "--out-dir", str(out), "--agent", "claude",
-                      "--model", PLAY_MODEL, "--collect", "--timeout", "1500", "--label", "dashboard"],
+                      "--model", model, "--collect", "--timeout", "1500", "--label", "dashboard"],
                      cwd=str(D.REPO), stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-    return _json({"started": game, "model": PLAY_MODEL})
+    return _json({"started": game, "model": model, "label": PLAY_MODELS.get(model, model)})
 
 
 @app.get("/api/palette")

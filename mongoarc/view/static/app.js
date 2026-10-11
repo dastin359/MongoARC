@@ -1055,20 +1055,29 @@ async function loadGames() {
       const o = el('option', null, `${g.game_id.split('-')[0].toUpperCase()}  ·  ${g.levels} levels`);
       o.value = g.game_id; sel.append(o);
     }
-    sel.onchange = () => { btn.disabled = !sel.value; msg.textContent = ''; };
-    btn.onclick = async () => {
+    const pick = $('#modelPick'), hidePick = () => { pick.hidden = true; };
+    const start = async (m) => {
       if (!sel.value) return;
-      btn.disabled = true; msg.textContent = 'starting ' + sel.value.split('-')[0].toUpperCase() + ' ...';
+      const name = sel.value.split('-')[0].toUpperCase();
+      hidePick(); btn.disabled = true; msg.textContent = `starting ${name} on ${m.label} ...`;
       try {
-        const res = await fetch('/api/launch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ game_id: sel.value }) });
+        const res = await fetch('/api/launch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ game_id: sel.value, model: m.id }) });
         const out = await res.json();
         if (!res.ok) throw new Error(out.detail || 'could not start');
-        msg.textContent = 'started on ' + out.model + '; following it live';
+        msg.textContent = `started on ${out.label || m.label}; following it live`;
         S.follow = true; S.mode = 'live'; setTab('live'); $('#runSel').value = '';
         S.runId = null; S.epoch++; stopPlay(); refreshRuns().catch(console.warn);
         setTimeout(() => { msg.textContent = ''; sel.value = ''; }, 9000);
       } catch (e) { msg.textContent = String(e.message || e); btn.disabled = false; }
     };
+    for (const m of (r.models && r.models.length ? r.models : [{ id: r.model, label: r.model }])) {   // START asks which model plays
+      const b = el('button', null, m.label.toUpperCase());
+      b.type = 'button'; b.title = m.id; b.onclick = () => start(m); pick.append(b);
+    }
+    sel.onchange = () => { btn.disabled = !sel.value; msg.textContent = ''; hidePick(); };
+    btn.onclick = (ev) => { if (!sel.value) return; ev.stopPropagation(); pick.hidden = !pick.hidden; };
+    document.addEventListener('click', (ev) => { if (!pick.hidden && !pick.contains(ev.target)) hidePick(); });
+    document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') hidePick(); });
   } catch (e) { msg.textContent = 'game list unavailable'; }
 }
 async function boot() {
