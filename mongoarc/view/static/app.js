@@ -1082,7 +1082,7 @@ async function loadGames() {
 }
 async function boot() {
   loadGames();
-  AC.mountOverlay($('#boardWrap')); AC.mountPad($('#ctlPad'), { layout: 'row' }); AC.mountTape($('#ctlTape'), { max: 12 });
+  AC.mountOverlay($('#boardWrap')); AC.mountPad($('#ctlPad'), { layout: 'row' }); AC.mountTape($('#ctlTape'), { max: 30 });
   if (window.MemoryTab) {
     MemoryTab.mount($('#tab-memory'));
     if (S.tab === 'memory' && q.get('run') && !q.get('run_id')) MemoryTab.setRun(q.get('run'));

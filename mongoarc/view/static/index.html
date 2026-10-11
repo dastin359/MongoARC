@@ -40,7 +40,6 @@
       <span class="chip gen" id="genChip"></span>
       <span class="chip ctl" id="roleChip" title="Control run: launched with --no-memory. It has no memory tool."></span>
       <span class="grow"></span>
-      <div class="tapeslot" id="ctlTape" title="The agent's most recent actions, newest on the right"></div>
       <span class="lastact" id="lastAct" hidden></span>
     </div>
     <div class="boardwrap" id="boardWrap">
@@ -50,6 +49,7 @@
       <div class="empty" id="boardEmpty">Waiting for a run.</div>
     </div>
     <div class="padslot" id="ctlPad"></div>
+    <div class="taperow"><span class="tapelbl">PREVIOUS ACTIONS</span><div class="tapeslot" id="ctlTape" title="The agent's most recent actions, newest on the right"></div></div>
     <div class="transport" id="transport">
       <div class="livebar" id="liveBar"><i></i><b>LIVE</b><span id="liveInfo">following the newest action</span></div>
       <div class="replaybar" id="replayBar" hidden>

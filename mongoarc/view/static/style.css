@@ -58,7 +58,7 @@ a.run:hover { color: #fff; }
 
 /* tab 1 */
 .live { display: grid; grid-template-columns: auto minmax(270px, .9fr) minmax(300px, 1.15fr); gap: 10px; padding: 10px; min-height: 0; }
-.stage { --stats-h: 172px; --board: min(calc(100vh / var(--ui, 1) - 44px - 20px - 38px - 44px - 32px - var(--pad-h) - var(--stats-h)), calc(46vw / var(--ui, 1))); --pad-h: 92px; width: var(--board); display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.stage { --stats-h: 172px; --tape-h: 40px; --board: min(calc(100vh / var(--ui, 1) - 44px - 20px - 38px - 44px - 40px - var(--tape-h) - var(--pad-h) - var(--stats-h)), calc(46vw / var(--ui, 1))); --pad-h: 92px; width: var(--board); display: flex; flex-direction: column; gap: 8px; min-height: 0; }
 .stagehead { height: 38px; display: flex; align-items: center; gap: 10px; min-width: 0; }
 .game { font: 700 24px var(--mono); letter-spacing: -.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 0 auto; min-width: 5ch; max-width: 50%; }
 .stagehead .chip { flex: none; }
@@ -252,6 +252,9 @@ details.add pre { margin: 5px 0 0; padding: 7px 9px; background: #05070a; border
 .padslot { flex: none; height: var(--pad-h); min-width: 0; }
 .padslot > .ctl-root { height: 100%; }
 .tapeslot { flex: 0 1 52%; min-width: 0; }
+.taperow { height: var(--tape-h); flex: none; display: flex; align-items: center; gap: 12px; padding: 0 10px; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+.taperow .tapelbl { flex: none; font: 700 11px var(--mono); letter-spacing: .1em; color: var(--ink3); white-space: nowrap; }
+.taperow .tapeslot { flex: 1 1 0; }
 .marker { display: none !important; }  /* the controller overlay draws the click */
 .memtab { min-height: 0; min-width: 0; overflow: hidden; }
 .legend i.dia { width: 10px; height: 10px; background: #8a94a3; border: 1.5px solid #fff; transform: rotate(45deg); border-radius: 0; }
