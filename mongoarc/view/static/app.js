@@ -783,7 +783,7 @@ function memoryUse() {
   let searches = 0, nudges = 0;
   for (const e of S.evoFor === S.runId ? S.evoEvents : []) {
     const u = at(Number.isInteger(e.level) ? e.level : 0);
-    if (e.kind === 'recall') { u.searches.push(e); searches++; }
+    if (e.kind === 'recall') { if (e.op !== 'list') { u.searches.push(e); searches++; } }   // listing everything is not a search, as on the other tabs
     else if (e.kind === 'memory_write') { u.writes.push(e); if (e.op in ops) { ops[e.op]++; u.ops[e.op]++; } }
     else if (e.kind === 'harness' && e.what === 'memory_nudge') { u.nudges++; nudges++; }
   }

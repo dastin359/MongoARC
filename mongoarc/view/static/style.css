@@ -371,7 +371,7 @@ details.add pre { margin: 5px 0 0; padding: 7px 9px; background: #05070a; border
 .rules { flex: .8; } .membanks { flex: 1.5; cursor: default; border-top: 3px solid #00ED64; }
 .membanks h2 { color: #00ED64; }
 .membanks h2 em { color: var(--ink3); }
-.memsum { display: flex; gap: 14px; align-items: baseline; padding: 6px 10px 2px; cursor: pointer; flex: none; }
+.memsum { display: flex; flex-wrap: wrap; gap: 2px 14px; align-items: baseline; padding: 6px 10px 2px; cursor: pointer; flex: none; }
 .memsum span { display: flex; align-items: baseline; gap: 5px; font: 700 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--ink2); }
 .memsum b { font: 700 26px/1 var(--mono); color: #fff; }
 .memsum span.s b { color: #ff8fd0; }

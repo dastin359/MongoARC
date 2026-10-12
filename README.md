@@ -87,4 +87,4 @@ One real ARC-AGI-3 game, CD82 (6 levels), played by Claude Opus 5.5 with this me
 |---|---|---|---|
 | With MongoDB memory | won 6/6 | 14, 6, 18, 14, 13, 16 | 81 |
 
-The agent saved 7 notes (one after every level, plus a note of the game's rules), and searched its memory 5 times, on 4 of the 6 levels. Each search after the first went through Atlas Vector Search and returned the notes it had saved on earlier levels. No note was updated or deleted in this game.
+The agent saved 7 notes (one after every level, plus a note of the game's rules), and searched its memory 4 times, on 4 of the 6 levels. Each search after the first went through Atlas Vector Search and returned the notes it had saved on earlier levels. No note was updated or deleted in this game.
