@@ -1080,8 +1080,23 @@ async function loadGames() {
     document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') hidePick(); });
   } catch (e) { msg.textContent = 'game list unavailable'; }
 }
+/* An open tab reloads itself when the page's own files change on the server, so it never shows an old layout. */
+const PAGE_FILES = ['index.html', 'app.js', 'style.css', 'controller.js', 'controller.css', 'memory.js', 'memory.css', 'resize.js', 'resize.css'];
+async function pageSignature() {
+  const tags = await Promise.all(PAGE_FILES.map((f) => fetch('/static/' + f, { method: 'HEAD', cache: 'no-store' })
+    .then((r) => (r.ok ? r.headers.get('etag') || r.headers.get('last-modified') : null))));
+  return tags.some((x) => !x) ? null : tags.join('|');
+}
+async function watchPageFiles() {
+  let loaded = null;
+  try { loaded = await pageSignature(); } catch (e) { return; }
+  if (!loaded) return;
+  setInterval(async () => {
+    try { const now = await pageSignature(); if (now && now !== loaded) location.reload(); } catch (e) { /* server restarting: ask again next time */ }
+  }, 6000);
+}
 async function boot() {
-  loadGames();
+  loadGames(); watchPageFiles();
   AC.mountOverlay($('#boardWrap')); AC.mountPad($('#ctlPad'), { layout: 'row' }); AC.mountTape($('#ctlTape'), { max: 30 });
   if (window.MemoryTab) {
     MemoryTab.mount($('#tab-memory'));
