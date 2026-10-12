@@ -279,13 +279,13 @@ def test_level_watcher(db, tmp_path):
         (1, said[0], True, 3, "harness"), (2, said[1], True, 8, "harness")]
     assert db[D.GENERATIONS].count_documents({}) == 0 and db[D.LESSONS].count_documents({}) == 0
     assert not (ws / "CLAUDE.md").exists()                                           # the watcher writes no file
-    # total unknown: the baseline's length is used, and with neither the "/N" is left out
+    # total unknown: the baseline's length is used, and with neither the "of N" is left out
     state(ws, 1, win=None)
     assert LevelWatcher(db, "r1", tmp_path, ws, [], say=lambda t: True).seen == 1    # a resume: not said twice
     (ws / "trace.state.json").unlink()
     bare = LevelWatcher(db, "r1", tmp_path, ws, [], say=lambda t: said.append(t) or True)
     state(ws, 1, win=None)
-    assert bare.poll().startswith("Level 0 cleared. You are on level 1.\n")
+    assert bare.poll().startswith("Level 1 cleared. You are on level 2.\n")
     # the game ended on the boundary (GAME_OVER), or the launcher is stopping: nothing is sent
     state(ws, 2, "GAME_OVER")
     assert bare.poll() is None
