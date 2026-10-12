@@ -246,11 +246,11 @@ def state(ws, level, st="NOT_FINISHED", win=3, actions=0):
 
 
 def test_nudge_text():
-    assert nudge_text(1, 3) == ("Level 0 cleared. You are on level 1/3.\n"
+    assert nudge_text(1, 3) == ("Level 1 cleared. You are on level 2 of 3.\n"
                                 f"Save what that level taught you: {SAVE} (update or delete any note it proved wrong).\n"
                                 f"Then, before your first action on this level, search your memory: {RECALL}.")
-    assert nudge_text(2, 3).startswith("Level 1 cleared. You are on level 2/3.\n")
-    assert nudge_text(2, None).startswith("Level 1 cleared. You are on level 2.\n")  # total unknown: no "/N"
+    assert nudge_text(2, 3).startswith("Level 2 cleared. You are on level 3 of 3.\n")
+    assert nudge_text(2, None).startswith("Level 2 cleared. You are on level 3.\n")  # total unknown: no "of N"
     assert nudge_text(2, 0).split("\n")[1:] == nudge_text(1, 3).split("\n")[1:]
     assert nudge_text(3, 3) is None and nudge_text(4, 3) is None                     # nothing after the final level
     assert nudge_text(0, 3) is None

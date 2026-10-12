@@ -50,6 +50,15 @@
   }
   function chip(text, cls) { return text == null || text === "" ? "" : '<span class="mem-chip ' + (cls || "") + '">' + esc(text) + "</span>"; }
   function kv(k, v) { return v == null ? "" : '<span class="mem-kv">' + esc(k) + " <b>" + esc(v) + "</b></span>"; }
+  function lvKV(level, runId) {     // levels are shown from 1; the data counts levels cleared
+    if (level == null) return "";
+    var n = (S.levels || {})[runId];
+    return n && level >= n ? kv("after level", n) : kv("level", Number(level) + 1);
+  }
+  function lvText(level, runId) {
+    var n = (S.levels || {})[runId];
+    return n && level >= n ? "after level " + n : "level " + (Number(level) + 1);
+  }
   function run(id) { return id ? '<a class="mem-run" data-run="' + esc(id) + '" title="open this run">' + esc(id) + "</a>" : ""; }
   function stat(v, label) { return "<span><b>" + esc(v == null ? "0" : v) + "</b>" + esc(label) + "</span>"; }
   function sec(title, html, n) {
@@ -88,7 +97,7 @@
       var refs = d.refs || [];
       return {
         head: '<span class="mem-id">' + esc(noteId(d._id)) + '</span><span class="mem-ntitle">' + esc(d.title || d.path || "") + "</span>" +
-          chip(d.game_id, "mem-game") + run(d.run_id) + kv("level", d.level) +
+          chip(d.game_id, "mem-game") + run(d.run_id) + lvKV(d.level, d.run_id) +
           (d.version == null ? "" : '<span class="mem-ver">v' + esc(d.version) + "</span>") + when(d.updated_at || d.created_at, "updated"),
         body: '<pre class="mem-prose">' + esc(d.text) + "</pre>" +
           sec("SCRIPT REFS  scripts this note points at", refs.length ? '<div class="mem-chips">' + refs.map(function (r) {
@@ -219,6 +228,11 @@
   }
   function loadRuns() {
     S.runsAt = Date.now();
+    api("/api/runs").then(function (rows) {     // how many levels each game has, for the level labels
+      var m = {};
+      (rows || []).forEach(function (r) { if (r.win_levels) m[r._id] = r.win_levels; });
+      S.levels = m;
+    }).catch(function () {});
     return api("/api/memory/runs").then(function (runs) {
       S.runs = runs || {};
     }).catch(function () {});
@@ -270,7 +284,7 @@
       S.el.acts.innerHTML = rows.map(function (e) {
         var search = e.kind === "recall", ids = e.notes || [];
         var head = '<div class="mem-ah"><b>' + (search ? "SEARCHED" : OPS[e.op] || "WROTE") + "</b>" +
-          (e.level == null ? "" : '<span class="mem-alv">level ' + esc(e.level) + "</span>") +
+          (e.level == null ? "" : '<span class="mem-alv">' + esc(lvText(e.level, e.run_id)) + "</span>") +
           (want ? "" : '<span class="mem-alv">' + esc(String(e.run_id || "").split("-")[0]) + "</span>");
         if (search) {
           return '<div class="mem-act mem-act-search" data-notes="' + esc(ids.join(" ")) + '">' + head +

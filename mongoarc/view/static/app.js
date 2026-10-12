@@ -12,6 +12,10 @@ function el(tag, cls, text) {
   if (text != null) e.textContent = text;
   return e;
 }
+/* Levels are shown counting from 1. The data keeps the game's own count of levels cleared, which is 0 during the first level. */
+const winN = () => (S.run && S.run.win_levels) || 0;
+const lvTag = (i, n) => (n && i >= n ? 'END' : 'L' + (i + 1));
+const lvName = (i, n) => (n && i >= n ? 'after level ' + n : 'level ' + (i + 1));
 async function api(path) {
   const r = await fetch(path, { cache: 'no-store' });
   if (!r.ok) throw Object.assign(new Error(r.status + ' ' + path), { status: r.status });
@@ -165,7 +169,7 @@ function onPos(played) {
   const a = S.actions[S.pos];
   if (played && a) {
     if (a.state === 'WIN') flash('win', 'WIN');
-    else if (a.level_cleared) flash('clear', `LEVEL ${a.level - 1} CLEARED`);
+    else if (a.level_cleared) flash('clear', `LEVEL ${a.level} CLEARED`);
     else if (a.death) flash('death', 'DEATH');
   } else if (!played) $('#flash').className = 'flash';
   renderHud(); syncScrub(); syncFeed(); syncRulebook();
@@ -416,7 +420,7 @@ function renderHud() {
   const chips = $('#levelChips');
   chips.replaceChildren();
   for (let i = 0; i < v.N; i++) {
-    chips.append(el('span', i < v.level ? 'done' : i === v.level && v.state !== 'WIN' ? 'cur' : '', 'L' + i));
+    chips.append(el('span', i < v.level ? 'done' : i === v.level && v.state !== 'WIN' ? 'cur' : '', 'L' + (i + 1)));
   }
   renderBars(v);
 }
@@ -437,7 +441,7 @@ function renderBars(v) {
     const val = el('div', 'val', String(used));
     // The multiple of the baseline is a verdict on a finished level; on the level in play it shows only once it is over.
     if (b) val.append(el('small', null, ` / ${b}  `), used && (cleared || used > b) ? (used / b).toFixed(2) + 'x' : '-');
-    row.append(el('b', null, 'L' + i), track, val);
+    row.append(el('b', null, 'L' + (i + 1)), track, val);
     box.append(row);
   }
 }
@@ -531,7 +535,7 @@ function renderMemory() {
   for (const e of evs.slice().reverse()) {  // every one, newest first
     const search = e.kind === 'recall', row = el('div', 'mev ' + (search ? 'search' : e.op || ''));
     const head = el('div', 'mh');
-    head.append(el('b', null, search ? 'SEARCHED' : MEM_OPS[e.op] || 'WROTE'), el('span', 'lv', Number.isInteger(e.level) ? 'level ' + e.level : ''));
+    head.append(el('b', null, search ? 'SEARCHED' : MEM_OPS[e.op] || 'WROTE'), el('span', 'lv', Number.isInteger(e.level) ? lvName(e.level, winN()) : ''));
     if (search) {
       const ids = e.notes || [];
       head.append(el('span', 'txt', e.query ? '“' + e.query + '”' : '(no question)'));
@@ -552,7 +556,7 @@ function renderMemory() {
 function ruleRow(e, cls, isNew) {
   const d = el('div', `rule ${cls}${isNew ? ' new' : ''}`);
   if (typeof e === 'string') { d.append(el('span', 'txt', e)); return d; }
-  if (Number.isInteger(e.level)) d.append(el('span', 'lv', 'L' + e.level));
+  if (Number.isInteger(e.level)) d.append(el('span', 'lv', lvTag(e.level, winN())));
   const t = el('span', 'txt', e.rule || JSON.stringify(e));
   if (e.note && e.note !== e.rule) t.append(el('span', 'note', e.note));
   d.append(t);
@@ -666,7 +670,7 @@ function renderEvent(e) {
   // trustworthy position of its own: show neither its action nor its level.
   const placed = Number.isInteger(e.action_n) && e.action_n === e._n;
   if (placed && e.action_n >= 0) meta.append(el('span', null, 'action ' + e.action_n));
-  if (placed && Number.isInteger(e.level)) meta.append(el('span', null, 'L' + e.level));
+  if (placed && Number.isInteger(e.level)) meta.append(el('span', null, lvTag(e.level, winN())));
   d.append(meta, body);
   return d;
 }
@@ -820,9 +824,9 @@ function renderTiles(r, rows, use) {
   }
   if (scored.length >= 2) {  // like for like inside one game: the first cleared level against the most recent one
     const a = scored[0], b = scored[scored.length - 1];
-    box.append(tile([el('small', null, `L${a.level} ${ratioX(a.ratio)} → `), el('span', b.ratio <= a.ratio ? 'up' : 'down', `L${b.level} ${ratioX(b.ratio)}`)],
+    box.append(tile([el('small', null, `L${a.level + 1} ${ratioX(a.ratio)} → `), el('span', b.ratio <= a.ratio ? 'up' : 'down', `L${b.level + 1} ${ratioX(b.ratio)}`)],
       'ACTIONS OVER HUMAN BASELINE: FIRST → LATEST CLEARED LEVEL', 's2'));
-  } else box.append(tile(scored.length ? `L${scored[0].level} ${ratioX(scored[0].ratio)}` : '-', 'ACTIONS OVER HUMAN BASELINE', 's2'));
+  } else box.append(tile(scored.length ? `L${scored[0].level + 1} ${ratioX(scored[0].ratio)}` : '-', 'ACTIONS OVER HUMAN BASELINE', 's2'));
 }
 function activityRow(e) {
   const d = el('div', 'mact ' + (e.kind === 'recall' ? 'search' : e.op || '')), h = el('div', 'h');
@@ -852,7 +856,7 @@ function renderActivity(r, rows, use) {
   }
   for (const lv of levels) {
     const u = use.by.get(lv), row = rows[lv], g = el('div', 'mgroup'), hd = el('div', 'mghd');
-    hd.append(el('b', null, 'LEVEL ' + lv), el('span', null, !row ? '' : (row.cleared ? `cleared in ${row.actions} actions` : row.playing ? `in play, ${row.actions} actions so far`
+    hd.append(el('b', null, rows.length && lv >= rows.length ? 'AFTER LEVEL ' + rows.length : 'LEVEL ' + (lv + 1)), el('span', null, !row ? '' : (row.cleared ? `cleared in ${row.actions} actions` : row.playing ? `in play, ${row.actions} actions so far`
       : row.actions ? `not cleared after ${row.actions} actions` : 'not played') + (row.baseline ? ` / human baseline ${row.baseline}` : '')));
     if (row && row.cleared && row.ratio != null) hd.append(el('i', row.ratio <= 1 ? 'good' : row.ratio <= 2 ? 'over' : 'bad', ratioX(row.ratio)));
     g.append(hd);
@@ -919,7 +923,7 @@ function renderChart(r, rows, use) {
       s.append(svg('circle', { cx, cy, r: 6.5, fill: 'none', stroke: col, 'stroke-width': 2.5, 'stroke-dasharray': '3 3' }),
         svg('text', { x: cx, y: cy - 12, 'text-anchor': 'middle', class: 't' }, 'in play'));
     } else if (failed(v, r)) cross(cx - (c && failed(c, ctl) ? 13 : 0), T + 9, self ? '#b3bdca' : '#F93C31', 2.5);
-    s.append(svg('text', { x: cx, y: rowY[0], 'text-anchor': 'middle', class: 't' }, 'L' + i),
+    s.append(svg('text', { x: cx, y: rowY[0], 'text-anchor': 'middle', class: 't' }, 'L' + (i + 1)),
       svg('text', { x: cx, y: rowY[1], 'text-anchor': 'middle' }, v.actions || v.cleared ? `${v.actions} / ${v.baseline == null ? '?' : v.baseline}` : '-'));
     const reached = v.cleared || v.playing || v.actions > 0;
     const saved = [[u.ops.save, 'new'], [u.ops.update, 'upd'], [u.ops.delete, 'del']].filter((p) => p[0]).map((p) => p[0] + ' ' + p[1]).join(' ');
@@ -967,7 +971,7 @@ function renderNotes(r) {
     txt.append(el('span', 'body', x.text || ''));
     for (const ref of x.refs || []) refs.append(el('span', null, ref));
     if (!(x.refs || []).length) refs.textContent = '-';
-    tr.append(el('td', 'id', noteShort(x._id)), el('td', 'ttl', x.title || ''), el('td', 'm', Number.isInteger(x.level) ? 'level ' + x.level : '-'),
+    tr.append(el('td', 'id', noteShort(x._id)), el('td', 'ttl', x.title || ''), el('td', 'm', Number.isInteger(x.level) ? lvName(x.level, winN()) : '-'),
       el('td', 'm', 'v' + (x.version || 1)), txt, refs);
     t.append(tr);
   }

@@ -39,7 +39,7 @@ def nudge_text(cleared: int, win_levels: int | None = None) -> str | None:
     cleared, total = int(cleared), int(win_levels or 0)
     if cleared <= 0 or (total and cleared >= total):
         return None
-    return NUDGE.format(done=cleared - 1, new=cleared, total=f"/{total}" if total else "")
+    return NUDGE.format(done=cleared, new=cleared + 1, total=f" of {total}" if total else "")   # levels count from 1
 
 
 class LevelWatcher:
