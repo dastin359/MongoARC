@@ -1072,7 +1072,7 @@ async function loadGames() {
     };
     for (const m of (r.models && r.models.length ? r.models : [{ id: r.model, label: r.model }])) {   // START asks which model plays
       const b = el('button', null, m.label.toUpperCase());
-      b.type = 'button'; b.title = m.id; b.onclick = () => start(m); pick.append(b);
+      b.type = 'button'; b.title = m.id + (r.timeout_s ? ` · the game is stopped after ${Math.round(r.timeout_s / 60)} minutes` : ''); b.onclick = () => start(m); pick.append(b);
     }
     sel.onchange = () => { btn.disabled = !sel.value; msg.textContent = ''; hidePick(); };
     btn.onclick = (ev) => { if (!sel.value) return; ev.stopPropagation(); pick.hidden = !pick.hidden; };

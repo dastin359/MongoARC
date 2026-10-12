@@ -67,6 +67,7 @@ def favicon() -> Response:
 _GAMES: dict = {"at": 0.0, "rows": []}
 PLAY_MODEL = os.environ.get("MONGOARC_PLAY_MODEL", "claude-opus-5-5")
 PLAY_MODELS = {"claude-opus-5": "Opus 5", "claude-opus-5-5": "Opus 5.5"}     # what the page offers
+PLAY_TIMEOUT = int(os.environ.get("MONGOARC_PLAY_TIMEOUT", "10800"))    # seconds a game started from the page may run
 MAX_RUNNING = 2
 
 
@@ -89,7 +90,7 @@ def _games() -> list[dict]:
 @app.get("/api/games")
 def games():
     try:
-        return _json({"games": _games(), "model": PLAY_MODEL,
+        return _json({"games": _games(), "model": PLAY_MODEL, "timeout_s": PLAY_TIMEOUT,
                       "models": [{"id": k, "label": v} for k, v in PLAY_MODELS.items()]})
     except Exception as exc:  # noqa: BLE001 -- no key, no network: the page shows the reason, never a traceback
         return JSONResponse({"games": [], "model": PLAY_MODEL, "error": f"game list unavailable ({type(exc).__name__})"},
@@ -112,7 +113,7 @@ def launch(body: dict = Body(...)):
     out.parent.mkdir(parents=True, exist_ok=True)
     log = open(str(out) + ".driver.log", "w")
     subprocess.Popen([sys.executable, "-m", "mongoarc.launch", "--game", game, "--out-dir", str(out), "--agent", "claude",
-                      "--model", model, "--collect", "--timeout", "1500", "--label", "dashboard"],
+                      "--model", model, "--collect", "--timeout", str(PLAY_TIMEOUT), "--label", "dashboard"],
                      cwd=str(D.REPO), stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     return _json({"started": game, "model": model, "label": PLAY_MODELS.get(model, model)})
 
