@@ -88,12 +88,3 @@ One real ARC-AGI-3 game, CD82 (6 levels), played by Claude Opus 5.5 with this me
 | With MongoDB memory | won 6/6 | 14, 6, 18, 14, 13, 16 | 81 |
 
 The agent saved 7 notes (one after every level, plus a note of the game's rules), and searched its memory 5 times, on 4 of the 6 levels. Each search after the first went through Atlas Vector Search and returned the notes it had saved on earlier levels. No note was updated or deleted in this game.
-
-## What is new here and what is not
-
-- **Not new:** [CCARC](https://github.com/dastin359/CCARC), the driver that runs Claude Code against the ARC-AGI-3 API. It is included as an unmodified git submodule and is prior work. MongoARC wraps it from the outside; no file in it is changed. The doctrine MongoARC gives the agent is derived from CCARC's.
-- **Built during the hackathon:** everything else in this repository: the collector, the MongoDB schema, the memory gateway and the agent's memory tool, the Atlas Vector Search setup, the launcher and its level-boundary prompts, the dashboard, and the toy-game suite used for testing.
-
-The toy games in `tools/mock_arc.py` are not ARC-AGI-3; they share its API shape and are used only for testing.
-
-For the hackathon the CCARC sandbox guards (network isolation, filesystem confinement) are turned off; the doctrine still tells the agent not to use the network and to stay in its directory. Results produced this way are demonstrations, not benchmark scores.
